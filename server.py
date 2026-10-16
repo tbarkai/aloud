@@ -1,13 +1,15 @@
 import re
 import io
+import threading
 import uuid
 import wave
+from typing import Annotated, Literal
 
 import markdown as md
 from bs4 import BeautifulSoup
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Response, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from kokoro import KPipeline
@@ -16,6 +18,21 @@ SAMPLE_RATE = 24000
 app = FastAPI()
 sessions: dict[str, list[str]] = {}
 _pipeline = None
+# Serializes synthesis (and the lazy model load inside it). torch already uses
+# every core for one sentence, so parallel requests only slow each other down.
+_synth_lock = threading.Lock()
+
+# British voices, matching the pipeline's lang_code="b".
+VOICES = {
+    "bf_emma": "Emma (F)",
+    "bf_alice": "Alice (F)",
+    "bf_lily": "Lily (F)",
+    "bm_george": "George (M)",
+    "bm_daniel": "Daniel (M)",
+    "bm_lewis": "Lewis (M)",
+    "bm_fable": "Fable (M)",
+}
+Voice = Literal[tuple(VOICES)]
 
 
 def get_pipeline() -> KPipeline:
@@ -28,6 +45,26 @@ def get_pipeline() -> KPipeline:
 PAUSE_MARKER = ""
 PAUSE_DURATION = 0.4  # seconds of silence per newline
 
+# Words whose trailing period doesn't end a sentence.
+ABBREVIATIONS = {"mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "e.g", "i.e", "fig"}
+# Terminal punctuation, optional closing quotes/brackets, whitespace, then
+# something that can start a sentence.
+SENTENCE_BOUNDARY = re.compile(r"[.!?]+[\"'”’)\]]*\s+(?=[\"'“‘(\[]?[A-Z0-9])")
+
+
+def split_line(line: str) -> list[str]:
+    parts, start = [], 0
+    for m in SENTENCE_BOUNDARY.finditer(line):
+        word = line[start:m.start()].split()[-1].lstrip("\"'“‘([")
+        if m.group().startswith(".") and (
+            word.lower() in ABBREVIATIONS or re.fullmatch(r"[A-Z]", word)
+        ):
+            continue
+        parts.append(line[start:m.end()].strip())
+        start = m.end()
+    parts.append(line[start:].strip())
+    return [p for p in parts if p]
+
 
 def split_sentences(text: str) -> list[str]:
     result = []
@@ -37,8 +74,7 @@ def split_sentences(text: str) -> list[str]:
             if result and result[-1] != PAUSE_MARKER:
                 result.append(PAUSE_MARKER)
             continue
-        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\"\'(])", line)
-        result.extend(p.strip() for p in parts if p.strip())
+        result.extend(split_line(line))
         result.append(PAUSE_MARKER)
     while result and result[-1] == PAUSE_MARKER:
         result.pop()
@@ -58,18 +94,27 @@ def generate_silence_wav(duration: float) -> bytes:
 LEAD_IN_FRAMES = int(SAMPLE_RATE * 0.05)  # 50ms lead-in to avoid clipping
 
 
+def to_pcm16(audio: np.ndarray) -> bytes:
+    # Kokoro occasionally overshoots ±1.0; clip so peaks saturate instead of wrapping.
+    return (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+
+
 def generate_wav(text: str, voice: str, speed: float) -> bytes:
-    pipeline = get_pipeline()
+    with _synth_lock:
+        pipeline = get_pipeline()
+        chunks = [
+            r.audio.numpy()
+            for r in pipeline(text, voice=voice, speed=speed, split_pattern=None)
+            if r.audio is not None
+        ]
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE)
         wf.writeframes(b"\x00" * LEAD_IN_FRAMES * 2)
-        for result in pipeline(text, voice=voice, speed=speed, split_pattern=None):
-            if result.audio is not None:
-                frames = (result.audio.numpy() * 32767).astype(np.int16).tobytes()
-                wf.writeframes(frames)
+        for chunk in chunks:
+            wf.writeframes(to_pcm16(chunk))
     return buf.getvalue()
 
 
@@ -87,7 +132,10 @@ def prepare(req: PrepareRequest):
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    content = (await file.read()).decode("utf-8")
+    try:
+        content = (await file.read()).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 text")
     content = re.sub(r'!\[.*?\]\(data:[^)]+\)', '', content)
     return {"text": content}
 
@@ -99,8 +147,10 @@ class ProcessRequest(BaseModel):
 def strip_markdown(text: str) -> str:
     # Remove base64 images before parsing (they're huge and useless)
     text = re.sub(r'!\[.*?\]\(data:[^)]+\)', '', text)
-    # Strip Pandoc-style header attributes e.g. {#some-id}
-    text = re.sub(r'\s*\{[^}]*\}', '', text)
+    # Strip Pandoc-style attributes e.g. {#some-id .class key=val}. Only
+    # brace groups made of such tokens, and never the newline before them.
+    attr = r'(?:[#.][\w-]+|[\w-]+=(?:"[^"]*"|[^\s}]*))'
+    text = re.sub(rf'[ \t]*\{{{attr}(?:\s+{attr})*\}}', '', text)
     # Convert markdown → HTML → plain text
     html = md.markdown(text, extensions=['tables', 'fenced_code', 'def_list'])
     soup = BeautifulSoup(html, 'html.parser')
@@ -149,7 +199,12 @@ def process(req: ProcessRequest):
 
 
 @app.get("/api/audio")
-def audio(session_id: str, index: int, voice: str = "bf_emma", speed: float = 1.0):
+def audio(
+    session_id: str,
+    index: int,
+    voice: Voice = "bf_emma",
+    speed: Annotated[float, Query(ge=0.5, le=2.0)] = 1.0,
+):
     if session_id not in sessions:
         return Response(status_code=404)
     sents = sessions[session_id]
@@ -164,7 +219,11 @@ def audio(session_id: str, index: int, voice: str = "bf_emma", speed: float = 1.
 
 @app.get("/")
 def root():
-    return HTMLResponse(HTML)
+    options = "\n".join(
+        f'<option value="{v}"{" selected" if v == "bf_emma" else ""}>{label}</option>'
+        for v, label in VOICES.items()
+    )
+    return HTMLResponse(HTML.replace("<!--VOICE_OPTIONS-->", options))
 
 
 HTML = r"""<!DOCTYPE html>
@@ -370,13 +429,7 @@ select:focus { outline: none; border-color: #6366f1; }
   <div class="ctrl-group">
     <span class="ctrl-label">Voice</span>
     <select id="voiceSelect" onchange="onVoiceChange()">
-      <option value="bf_emma" selected>Emma (F)</option>
-      <option value="bf_alice">Alice (F)</option>
-      <option value="bf_lily">Lily (F)</option>
-      <option value="bm_george">George (M)</option>
-      <option value="bm_daniel">Daniel (M)</option>
-      <option value="bm_lewis">Lewis (M)</option>
-      <option value="bm_fable">Fable (M)</option>
+      <!--VOICE_OPTIONS-->
     </select>
   </div>
 
@@ -392,7 +445,7 @@ select:focus { outline: none; border-color: #6366f1; }
 
   const voice = () => document.getElementById('voiceSelect').value;
   const speed = () => parseFloat(document.getElementById('speedSlider').value);
-  const cacheKey = (i) => `${i}:${voice()}:${speed()}`;
+  const cacheKey = (i) => `${sessionId}:${i}:${voice()}:${speed()}`;
 
   function onSpeedChange() {
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
@@ -407,10 +460,16 @@ select:focus { outline: none; border-color: #6366f1; }
     input.value = '';
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch('/api/upload', { method: 'POST', body: form });
-    const data = await res.json();
-    document.getElementById('textInput').value = data.text;
-    setStatus('File loaded');
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      document.getElementById('textInput').value = data.text;
+      setStatus('File loaded');
+    } catch (e) {
+      setStatus(`Upload failed: ${e.message}`);
+      console.error(e);
+    }
   }
 
   async function processText() {
@@ -439,6 +498,7 @@ select:focus { outline: none; border-color: #6366f1; }
   }
 
   async function loadSentences(text) {
+    pause();
     const res = await fetch('/api/prepare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -491,6 +551,12 @@ select:focus { outline: none; border-color: #6366f1; }
   // audioPending: key -> Promise<Audio>
   let audioReady = {};
   let audioPending = {};
+  // Bumped whenever playback stops or restarts, so callbacks from an earlier
+  // run see they are stale and don't start a second, overlapping playback.
+  let playGen = 0;
+  // The server synthesizes one sentence at a time, so fetch sequentially:
+  // the sentence needed now never queues behind ones needed later.
+  const LOOKAHEAD = 4;
 
   function invalidateCache() {
     Object.values(audioReady).forEach(a => URL.revokeObjectURL(a.src));
@@ -499,66 +565,88 @@ select:focus { outline: none; border-color: #6366f1; }
   }
 
   function prefetch(index) {
-    if (index < 0 || index >= sentences.length) return;
     const key = cacheKey(index);
-    if (key in audioReady || key in audioPending) return;
+    if (audioReady[key]) return Promise.resolve(audioReady[key]);
+    if (audioPending[key]) return audioPending[key];
+    // A fetch that finishes after invalidateCache() must not land in the new cache.
+    const ready = audioReady, pending = audioPending;
     const url = `/api/audio?session_id=${sessionId}&index=${index}&voice=${voice()}&speed=${speed()}`;
-    audioPending[key] = fetch(url).then(r => r.blob()).then(blob => {
-      const audio = new Audio(URL.createObjectURL(blob));
-      audio.load();
-      audioReady[key] = audio;
-      delete audioPending[key];
-      return audio;
-    });
+    pending[key] = fetch(url)
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      })
+      .then(blob => {
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.load();
+        if (ready === audioReady) ready[key] = audio;
+        return audio;
+      })
+      .finally(() => { delete pending[key]; });
+    return pending[key];
   }
 
-  // If audio is ready, callback fires synchronously (safe for trusted event chains).
-  // Otherwise waits on the pending promise.
-  function getAudio(index, callback) {
-    prefetch(index);
-    const key = cacheKey(index);
-    if (audioReady[key]) {
-      callback(audioReady[key]);
-    } else {
-      audioPending[key].then(callback);
+  async function prefetchAhead(index, gen) {
+    const end = Math.min(index + LOOKAHEAD, sentences.length);
+    for (let i = index; i < end && gen === playGen; i++) {
+      try { await prefetch(i); } catch { return; }
     }
   }
 
-  function setupAndPlay(audio, index) {
-    if (!isPlaying) { URL.revokeObjectURL(audio.src); return; }
+  function setupAndPlay(audio, index, gen) {
+    if (gen !== playGen) return;
     currentAudio = audio;
     delete audioReady[cacheKey(index)];
     highlight(index);
     setStatus(`${index + 1} / ${sentences.length}`);
-    audio.onended = () => { URL.revokeObjectURL(audio.src); playIndex(index + 1); };
-    audio.onerror = () => { URL.revokeObjectURL(audio.src); playIndex(index + 1); };
+    const next = () => {
+      URL.revokeObjectURL(audio.src);
+      if (gen === playGen) playIndex(index + 1);
+    };
+    audio.onended = next;
+    audio.onerror = next;
     audio.play();
   }
 
+  function playbackFailed(err) {
+    pause();
+    setStatus('Audio failed, press play to retry');
+    console.error(err);
+  }
+
   function playIndex(index) {
-    if (!isPlaying || index >= sentences.length) {
-      if (index >= sentences.length) {
-        isPlaying = false;
-        setIcon(false);
-        clearHighlights();
-        currentIndex = 0;
-        setStatus('Done');
-      }
+    if (!isPlaying) return;
+    if (index >= sentences.length) {
+      pause();
+      clearHighlights();
+      currentIndex = 0;
+      setStatus('Done');
       return;
     }
     currentIndex = index;
-    for (let i = index; i < Math.min(index + 6, sentences.length); i++) prefetch(i);
-    getAudio(index, audio => setupAndPlay(audio, index));
+    const gen = playGen;
+    const ready = audioReady[cacheKey(index)];
+    if (ready) {
+      // Play synchronously so a click's user-gesture permission still applies.
+      setupAndPlay(ready, index, gen);
+      prefetchAhead(index + 1, gen);
+    } else {
+      prefetch(index).then(
+        audio => { setupAndPlay(audio, index, gen); prefetchAhead(index + 1, gen); },
+        err => { if (gen === playGen) playbackFailed(err); },
+      );
+    }
   }
 
   function playFrom(index) {
+    playGen++;
     isPlaying = true;
     setIcon(true);
-    for (let i = index; i < Math.min(index + 6, sentences.length); i++) prefetch(i);
     playIndex(index);
   }
 
   function pause() {
+    playGen++;
     isPlaying = false;
     setIcon(false);
     if (currentAudio) {
