@@ -488,8 +488,29 @@ body.dragging::after {
   function onSpeedChange() {
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
     savePrefs();
-    invalidateCache();
+    speedChanged();
     syncApp();
+  }
+
+  // Speed applies at once: the sentence being read (or paused) is sped up or
+  // slowed down in the player, and the ones after it are re-synthesized at the
+  // new speed, which sounds more natural than stretching.
+  function speedChanged() {
+    invalidateCache({ keepPaused: true });
+    for (const a of [currentAudio, paused?.audio]) {
+      if (a) a.playbackRate = speed() / a.synthSpeed;
+    }
+    refillAhead();
+  }
+
+  // A slider drag sends many changes; synthesize once it settles.
+  let refillTimer;
+  function refillAhead() {
+    clearTimeout(refillTimer);
+    const gen = playGen;
+    refillTimer = setTimeout(() => {
+      if (isPlaying && gen === playGen) prefetchAhead(currentIndex + 1, gen);
+    }, 300);
   }
 
   // In the macOS app, the native toolbar mirrors the page's playback state.
@@ -614,7 +635,7 @@ body.dragging::after {
   // Called by the macOS app's toolbar speed slider.
   function readerSetSpeed(v) {
     setSpeed(v);
-    invalidateCache();
+    speedChanged();
   }
 
   // Called by the macOS app when the voice changes in its settings.
@@ -733,12 +754,13 @@ body.dragging::after {
   // the sentence needed now never queues behind ones needed later.
   const LOOKAHEAD = 4;
 
-  function invalidateCache() {
+  function invalidateCache({ keepPaused = false } = {}) {
     Object.values(audioReady).forEach(a => URL.revokeObjectURL(a.src));
     audioReady = {};
     audioPending = {};
-    // Paused audio has the old voice/speed (or text); resume restarts the sentence instead.
-    discardPaused();
+    // Paused audio has the old voice (or text); resume restarts the sentence
+    // instead. A speed change keeps it and adjusts its playback rate.
+    if (!keepPaused) discardPaused();
   }
 
   // The audio that was playing when paused, so play continues mid-sentence.
@@ -755,7 +777,8 @@ body.dragging::after {
     if (audioPending[key]) return audioPending[key];
     // A fetch that finishes after invalidateCache() must not land in the new cache.
     const ready = audioReady, pending = audioPending;
-    const url = `/api/audio?session_id=${sessionId}&index=${index}&voice=${voice()}&speed=${speed()}`;
+    const synthSpeed = speed();
+    const url = `/api/audio?session_id=${sessionId}&index=${index}&voice=${voice()}&speed=${synthSpeed}`;
     pending[key] = fetch(url)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -763,6 +786,8 @@ body.dragging::after {
       })
       .then(blob => {
         const audio = new Audio(URL.createObjectURL(blob));
+        audio.synthSpeed = synthSpeed;
+        audio.preservesPitch = true;
         audio.load();
         if (ready === audioReady) ready[key] = audio;
         return audio;
