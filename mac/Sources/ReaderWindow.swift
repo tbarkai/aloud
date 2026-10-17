@@ -5,20 +5,24 @@ import WebKit
 /// in embed mode and pushes the selected text into it.
 @MainActor
 final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
-    private let window: NSWindow
+    let window: NSWindow
     private let webView: WKWebView
+    private let settings: Settings
     private var pageLoaded = false
     private var loadingReader = false
-    private var pendingText: String?
+    private var pending: (text: String, markdown: Bool)?
 
-    override init() {
+    init(settings: Settings) {
+        self.settings = settings
         let config = WKWebViewConfiguration()
         // Start reading as soon as text arrives, without a click in the page.
         config.mediaTypesRequiringUserActionForPlayback = []
         webView = WKWebView(frame: .zero, configuration: config)
+        // Match the page background while it loads, instead of flashing white in dark mode.
+        webView.underPageBackgroundColor = .textBackgroundColor
 
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -42,8 +46,9 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     /// Queues `text` to be read once the page is up; call `serverReady()` after.
-    func read(_ text: String) {
-        pendingText = text
+    /// Markdown is cleaned up by the server before reading.
+    func read(_ text: String, markdown: Bool = false) {
+        pending = (text, markdown)
         show()
         if pageLoaded { deliverPending() }
     }
@@ -72,6 +77,14 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         show()
     }
 
+    func webView(
+        _ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
+    ) {
+        // A file dropped outside the page's drop handling would replace the reader.
+        decisionHandler(action.request.url?.isFileURL == true ? .cancel : .allow)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard webView.url?.host == Server.url.host else { return }
         loadingReader = false
@@ -96,11 +109,30 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     private func deliverPending() {
-        guard let text = pendingText else { return }
-        pendingText = nil
+        guard let (text, markdown) = pending else { return }
+        pending = nil
+        // Voice and default speed are read now, so a new text always starts
+        // from the current settings rather than the last text's speed.
         webView.callAsyncJavaScript(
-            "await readerLoad(text)", arguments: ["text": text], in: nil, in: .page
+            "await readerLoad(text, settings, markdown)",
+            arguments: [
+                "text": text,
+                "settings": ["voice": settings.voice, "speed": settings.defaultSpeed],
+                "markdown": markdown,
+            ],
+            in: nil, in: .page
         ) { _ in }
+    }
+
+    func clear() {
+        pending = nil
+        guard pageLoaded else { return }
+        webView.evaluateJavaScript("readerClear()")
+    }
+
+    func setVoice(_ voice: String) {
+        guard pageLoaded else { return }
+        webView.callAsyncJavaScript("readerSetVoice(v)", arguments: ["v": voice], in: nil, in: .page) { _ in }
     }
 
     func windowWillClose(_ notification: Notification) {

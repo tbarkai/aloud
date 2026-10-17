@@ -217,6 +217,11 @@ def audio(
     return Response(content=wav_data, media_type="audio/wav")
 
 
+@app.get("/api/voices")
+def voices():
+    return [{"id": v, "name": name} for v, name in VOICES.items()]
+
+
 @app.get("/")
 def root():
     options = "\n".join(
@@ -233,125 +238,136 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kokoro Reader</title>
 <style>
+:root {
+  --bg: #ffffff;
+  --text: #1d1d1f;
+  --muted: #86868b;
+  --played: #a8a8ad;
+  --hairline: rgba(0, 0, 0, 0.1);
+  --hover: rgba(0, 0, 0, 0.045);
+  --highlight: #fff1a8;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --bar: rgba(255, 255, 255, 0.86);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --text: #ececf0;
+    --muted: #8e8e93;
+    --played: #6c6c70;
+    --hairline: rgba(255, 255, 255, 0.12);
+    --hover: rgba(255, 255, 255, 0.06);
+    --highlight: rgba(255, 214, 10, 0.26);
+    --accent: #7c74ff;
+    --accent-hover: #918aff;
+    --bar: rgba(28, 28, 30, 0.86);
+  }
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #f0f2f5;
-  color: #111;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
-header {
-  background: white;
-  border-bottom: 1px solid #e5e7eb;
-  padding: 14px 24px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-header h1 { font-size: 1rem; font-weight: 600; }
-
-.main {
-  max-width: 780px;
+.page {
+  max-width: 720px;
   margin: 0 auto;
-  padding: 24px 24px 110px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  padding: 40px 40px 120px;
 }
 
-.card {
-  background: white;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}
+header { margin-bottom: 20px; }
+header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 
-.input-card { padding: 16px; }
+.input { margin-bottom: 36px; }
 
 textarea {
   width: 100%;
   height: 120px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--hairline);
   border-radius: 8px;
-  padding: 12px;
-  font-size: 14px;
-  font-family: inherit;
-  resize: vertical;
+  padding: 10px 12px;
+  font: inherit;
   line-height: 1.5;
+  color: inherit;
+  background: transparent;
+  resize: vertical;
 }
-textarea:focus { outline: none; border-color: #6366f1; }
+textarea:focus { outline: none; border-color: var(--accent); }
 
 .input-row {
   display: flex;
   justify-content: flex-end;
-  align-items: center;
   gap: 8px;
   margin-top: 10px;
 }
 
-.btn-load {
-  background: #6366f1;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 9px 18px;
-  font-size: 14px;
+button.text-btn {
+  font: inherit;
   font-weight: 500;
+  border-radius: 7px;
+  padding: 6px 14px;
   cursor: pointer;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: inherit;
 }
-.btn-load:hover { background: #4f46e5; }
+button.text-btn:hover { background: var(--hover); }
+button.text-btn.primary { background: var(--accent); border-color: transparent; color: white; }
+button.text-btn.primary:hover { background: var(--accent-hover); }
+button.text-btn:disabled { opacity: 0.5; cursor: default; }
 
-.btn-upload {
-  background: white;
-  color: #374151;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 9px 18px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
+#readerContent {
+  font-family: ui-serif, 'New York', Charter, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.7;
 }
-.btn-upload:hover { background: #f9fafb; }
-.btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
+#readerContent p + p { margin-top: 0.9em; }
 
-.reader-card { padding: 28px; min-height: 180px; }
-
-#readerContent { line-height: 2; font-size: 16.5px; color: #1a1a1a; }
-
-.placeholder { color: #9ca3af; font-size: 14px; }
+.placeholder {
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--muted);
+}
 
 .sentence {
   cursor: pointer;
   border-radius: 4px;
-  padding: 2px 3px;
-  margin: 0 -3px;
-  transition: background 0.1s;
+  padding: 1px 2px;
+  margin: 0 -2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background 0.12s, color 0.12s;
 }
-.sentence:hover { background: #f3f4f6; }
-.sentence.active { background: #fef08a; }
-.sentence.played { color: #b0b7c3; }
+.sentence:hover { background: var(--hover); }
+.sentence.played { color: var(--played); }
+.sentence.active { background: var(--highlight); color: var(--text); }
 
-/* bottom controls bar */
 .controls {
   position: fixed;
   bottom: 0; left: 0; right: 0;
-  background: white;
-  border-top: 1px solid #e5e7eb;
-  padding: 12px 24px;
+  background: var(--bar);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  backdrop-filter: saturate(180%) blur(16px);
+  border-top: 1px solid var(--hairline);
+}
+.controls-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 10px 40px;
   display: flex;
   align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
+  gap: 20px;
 }
 
 .btn-play {
-  width: 44px; height: 44px;
+  width: 36px; height: 36px;
   border-radius: 50%;
-  background: #6366f1;
+  background: var(--accent);
   color: white;
   border: none;
   cursor: pointer;
@@ -361,81 +377,99 @@ textarea:focus { outline: none; border-color: #6366f1; }
   flex-shrink: 0;
   transition: background 0.15s;
 }
-.btn-play:hover { background: #4f46e5; }
-.btn-play:disabled { background: #d1d5db; cursor: not-allowed; }
+.btn-play:hover { background: var(--accent-hover); }
+.btn-play:disabled { background: var(--hover); color: var(--muted); cursor: default; }
 
 .ctrl-group { display: flex; align-items: center; gap: 8px; }
-.ctrl-label { font-size: 12px; font-weight: 500; color: #6b7280; white-space: nowrap; }
+.ctrl-label { font-size: 12px; color: var(--muted); }
 
-input[type=range] { width: 90px; accent-color: #6366f1; cursor: pointer; }
+input[type=range] { width: 110px; accent-color: var(--accent); cursor: pointer; }
 
-.speed-val { font-size: 13px; color: #374151; min-width: 32px; }
+.speed-val { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 30px; }
 
 select {
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 5px 8px;
+  font: inherit;
   font-size: 13px;
-  background: white;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 3px 6px;
   cursor: pointer;
 }
-select:focus { outline: none; border-color: #6366f1; }
 
-.status { margin-left: auto; font-size: 12px; color: #9ca3af; }
+.status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
-.embed header, .embed .input-card { display: none; }
+body.dragging::after {
+  content: 'Drop a .md or .txt file to read it';
+  position: fixed;
+  inset: 12px;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  color: var(--accent);
+  font-weight: 500;
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* Embedded in the macOS app: settings own the voice, the app supplies text. */
+.embed header, .embed .input, .embed .voice-group { display: none; }
+.embed .page { padding-top: 32px; }
 </style>
 </head>
 <body>
 
-<header>
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="#6366f1">
-    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
-  </svg>
-  <h1>Kokoro Reader</h1>
-</header>
+<div class="page">
+  <header><h1>Kokoro Reader</h1></header>
 
-<div class="main">
-  <div class="card input-card">
+  <div class="input">
     <textarea id="textInput" placeholder="Paste your text here…"></textarea>
     <div class="input-row">
       <input type="file" id="fileInput" accept=".md,.txt" style="display:none" onchange="uploadFile(this)">
-      <button class="btn-upload" id="uploadBtn" onclick="document.getElementById('fileInput').click()">Upload .md</button>
-      <button class="btn-load" onclick="processText()">Process Text</button>
+      <button class="text-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()">Upload .md</button>
+      <button class="text-btn primary btn-load" onclick="processText()">Process Text</button>
     </div>
   </div>
 
-  <div class="card reader-card">
-    <div id="readerContent">
-      <span class="placeholder">Paste text above and click Load Text to begin.</span>
-    </div>
+  <div id="readerContent">
+    <p class="placeholder" id="placeholder">Paste text above and click Process Text to begin.</p>
   </div>
 </div>
 
 <div class="controls">
-  <button class="btn-play" id="playBtn" onclick="togglePlay()" disabled>
-    <svg id="iconPlay" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-      <polygon points="5,3 19,12 5,21"/>
-    </svg>
-    <svg id="iconPause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none">
-      <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
-    </svg>
-  </button>
+  <div class="controls-inner">
+    <button class="btn-play" id="playBtn" onclick="togglePlay()" disabled aria-label="Play">
+      <svg id="iconPlay" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+        <polygon points="6,3 20,12 6,21"/>
+      </svg>
+      <svg id="iconPause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+        <rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/>
+      </svg>
+    </button>
 
-  <div class="ctrl-group">
-    <span class="ctrl-label">Speed</span>
-    <input type="range" id="speedSlider" min="0.5" max="2" step="0.1" value="1.3" oninput="onSpeedChange()">
-    <span class="speed-val" id="speedVal">1.3×</span>
+    <div class="ctrl-group">
+      <span class="ctrl-label">Speed</span>
+      <input type="range" id="speedSlider" min="0.5" max="2" step="0.1" value="1.3" oninput="onSpeedChange()">
+      <span class="speed-val" id="speedVal">1.3×</span>
+    </div>
+
+    <div class="ctrl-group voice-group">
+      <span class="ctrl-label">Voice</span>
+      <select id="voiceSelect" onchange="onVoiceChange()">
+        <!--VOICE_OPTIONS-->
+      </select>
+    </div>
+
+    <span class="status" id="status"></span>
   </div>
-
-  <div class="ctrl-group">
-    <span class="ctrl-label">Voice</span>
-    <select id="voiceSelect" onchange="onVoiceChange()">
-      <!--VOICE_OPTIONS-->
-    </select>
-  </div>
-
-  <span class="status" id="status"></span>
 </div>
 
 <script>
@@ -460,6 +494,7 @@ select:focus { outline: none; border-color: #6366f1; }
   // Remember voice and speed across windows. Storage can be unavailable
   // (private mode, blocked site data), in which case the defaults stay.
   function savePrefs() {
+    if (EMBED) return;
     try {
       localStorage.setItem('reader.prefs', JSON.stringify({ voice: voice(), speed: speed() }));
     } catch {}
@@ -472,18 +507,88 @@ select:focus { outline: none; border-color: #6366f1; }
     const select = document.getElementById('voiceSelect');
     if ([...select.options].some(o => o.value === prefs.voice)) select.value = prefs.voice;
     const slider = document.getElementById('speedSlider');
-    if (prefs.speed >= +slider.min && prefs.speed <= +slider.max) slider.value = prefs.speed;
+    if (prefs.speed >= +slider.min && prefs.speed <= +slider.max) setSpeed(prefs.speed);
+  }
+
+  function setSpeed(value) {
+    document.getElementById('speedSlider').value = value;
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
   }
 
-  // Embedded in the macOS app: no input card, and the app pushes text in.
-  if (new URLSearchParams(location.search).has('embed')) document.body.classList.add('embed');
-  restorePrefs();
+  // Embedded in the macOS app: the app pushes text in, and its settings own
+  // the voice and default speed, so nothing is remembered in the page.
+  const EMBED = new URLSearchParams(location.search).has('embed');
+  // Kept so readerClear can put it back after sentences replace it.
+  const placeholder = document.getElementById('placeholder');
+  if (EMBED) {
+    document.body.classList.add('embed');
+    placeholder.textContent =
+      'Select text in any app, right-click and choose TTS, or press ⌘V to read the clipboard.';
+  } else {
+    restorePrefs();
+  }
 
-  // Called by the macOS app with the text the user selected.
-  async function readerLoad(text) {
+  // Called by the macOS app with new text and the settings to read it with.
+  // The speed slider starts at the default and can be changed for this text.
+  // The app's settings from the last readerLoad, reused for files dropped on the page.
+  let appSettings = {};
+
+  async function readerLoad(text, settings = {}, markdown = false) {
+    appSettings = settings;
+    if (settings.voice) document.getElementById('voiceSelect').value = settings.voice;
+    if (settings.speed) setSpeed(settings.speed);
+    if (markdown) text = await cleanMarkdown(text);
     await loadSentences(text);
     if (sentences.length) playFrom(0);
+  }
+
+  async function cleanMarkdown(text) {
+    const res = await fetch('/api/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()).text;
+  }
+
+  // Drop a .md or .txt file anywhere on the page to read it. Without
+  // preventDefault the browser would navigate to the file instead.
+  const hasFiles = e => [...e.dataTransfer.types].includes('Files');
+  document.addEventListener('dragover', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    document.body.classList.add('dragging');
+  });
+  document.addEventListener('dragleave', e => {
+    if (!e.relatedTarget) document.body.classList.remove('dragging');
+  });
+  document.addEventListener('drop', async e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    document.body.classList.remove('dragging');
+    const file = [...e.dataTransfer.files].find(f => /\.(md|markdown|txt)$/i.test(f.name));
+    if (!file) { setStatus('Only .md and .txt files can be read'); return; }
+    try {
+      const markdown = /\.(md|markdown)$/i.test(file.name);
+      if (EMBED) {
+        await readerLoad(await file.text(), appSettings, markdown);
+      } else {
+        const text = markdown ? await cleanMarkdown(await file.text()) : await file.text();
+        document.getElementById('textInput').value = text;
+        await loadSentences(text);
+      }
+    } catch (err) {
+      setStatus(`Could not read ${file.name}`);
+      console.error(err);
+    }
+  });
+
+  // Called by the macOS app when the voice changes in its settings.
+  function readerSetVoice(v) {
+    document.getElementById('voiceSelect').value = v;
+    invalidateCache();
   }
 
   async function uploadFile(input) {
@@ -512,14 +617,9 @@ select:focus { outline: none; border-color: #6366f1; }
     btn.textContent = 'Processing…';
     setStatus('Sending to Llama…');
     try {
-      const res = await fetch('/api/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
-      });
-      const data = await res.json();
-      document.getElementById('textInput').value = data.text;
-      await loadSentences(data.text);
+      const cleaned = await cleanMarkdown(text);
+      document.getElementById('textInput').value = cleaned;
+      await loadSentences(cleaned);
     } catch (e) {
       setStatus('Processing failed');
       console.error(e);
@@ -549,19 +649,18 @@ select:focus { outline: none; border-color: #6366f1; }
   function renderSentences() {
     const el = document.getElementById('readerContent');
     el.innerHTML = '';
+    // Pause markers separate lines of the source text; each run between them is a paragraph.
+    let para = null;
     sentences.forEach((s, i) => {
-      if (s === '') {
-        const br = document.createElement('br');
-        br.dataset.index = i;
-        el.appendChild(br);
-      } else {
-        const span = document.createElement('span');
-        span.className = 'sentence';
-        span.dataset.index = i;
-        span.textContent = s + ' ';
-        span.addEventListener('click', () => jumpTo(i));
-        el.appendChild(span);
-      }
+      if (s === '') { para = null; return; }
+      if (!para) para = el.appendChild(document.createElement('p'));
+      else para.append(' ');
+      const span = document.createElement('span');
+      span.className = 'sentence';
+      span.dataset.index = i;
+      span.textContent = s;
+      span.addEventListener('click', () => jumpTo(i));
+      para.appendChild(span);
     });
   }
 
@@ -594,6 +693,16 @@ select:focus { outline: none; border-color: #6366f1; }
     Object.values(audioReady).forEach(a => URL.revokeObjectURL(a.src));
     audioReady = {};
     audioPending = {};
+    // Paused audio has the old voice/speed (or text); resume restarts the sentence instead.
+    discardPaused();
+  }
+
+  // The audio that was playing when paused, so play continues mid-sentence.
+  let paused = null;  // { audio, index }
+
+  function discardPaused() {
+    if (paused) URL.revokeObjectURL(paused.audio.src);
+    paused = null;
   }
 
   function prefetch(index) {
@@ -633,6 +742,7 @@ select:focus { outline: none; border-color: #6366f1; }
     setStatus(`${index + 1} / ${sentences.length}`);
     const next = () => {
       URL.revokeObjectURL(audio.src);
+      if (currentAudio === audio) currentAudio = null;
       if (gen === playGen) playIndex(index + 1);
     };
     audio.onended = next;
@@ -650,6 +760,7 @@ select:focus { outline: none; border-color: #6366f1; }
     if (!isPlaying) return;
     if (index >= sentences.length) {
       pause();
+      discardPaused();
       clearHighlights();
       currentIndex = 0;
       setStatus('Done');
@@ -674,6 +785,16 @@ select:focus { outline: none; border-color: #6366f1; }
     playGen++;
     isPlaying = true;
     setIcon(true);
+    const resume = paused;
+    paused = null;
+    if (resume && resume.index === index) {
+      // play() continues from where pause() stopped the element.
+      currentIndex = index;
+      setupAndPlay(resume.audio, index, playGen);
+      prefetchAhead(index + 1, playGen);
+      return;
+    }
+    if (resume) URL.revokeObjectURL(resume.audio.src);
     playIndex(index);
   }
 
@@ -683,8 +804,21 @@ select:focus { outline: none; border-color: #6366f1; }
     setIcon(false);
     if (currentAudio) {
       currentAudio.pause();
+      paused = { audio: currentAudio, index: currentIndex };
       currentAudio = null;
     }
+  }
+
+  // Called by the macOS app (Edit > Clear).
+  function readerClear() {
+    pause();
+    invalidateCache();
+    sessionId = null;
+    sentences = [];
+    currentIndex = 0;
+    document.getElementById('readerContent').replaceChildren(placeholder);
+    document.getElementById('playBtn').disabled = true;
+    setStatus('');
   }
 
   function togglePlay() {
@@ -695,6 +829,8 @@ select:focus { outline: none; border-color: #6366f1; }
   function jumpTo(index) {
     const wasPlaying = isPlaying;
     if (isPlaying) pause();
+    // Clicking a sentence reads it from its start, even the paused one.
+    discardPaused();
     currentIndex = index;
     highlight(index);
     if (wasPlaying) playFrom(index);

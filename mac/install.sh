@@ -14,15 +14,21 @@ echo "Syncing Python environment…"
 
 echo "Building app…"
 rm -rf "$BUILD"
-mkdir -p "$BUILD/Contents/MacOS"
+mkdir -p "$BUILD/Contents/MacOS" "$BUILD/Contents/Resources"
 swiftc -O -swift-version 5 -target arm64-apple-macos14 \
   "$MAC_DIR"/Sources/*.swift -o "$BUILD/Contents/MacOS/KokoroReader"
+swiftc -O "$MAC_DIR/make-icon.swift" -o "$MAC_DIR/build/make-icon"
+"$MAC_DIR/build/make-icon" "$MAC_DIR/build/AppIcon.iconset"
+iconutil -c icns "$MAC_DIR/build/AppIcon.iconset" -o "$BUILD/Contents/Resources/AppIcon.icns"
 cp "$MAC_DIR/Info.plist" "$BUILD/Contents/Info.plist"
 plutil -replace ReaderProjectDir -string "$ROOT" "$BUILD/Contents/Info.plist"
 codesign --force --sign - "$BUILD"
 
-echo "Installing to $DEST…"
-pkill -x KokoroReader 2>/dev/null && sleep 1 || true
+echo "Installing to ${DEST}…"
+# Quit normally so the app stops its server, then clear any server left
+# behind by a crash, so the new app doesn't reuse one running old code.
+osascript -e 'quit app id "dev.local.KokoroReader"' 2>/dev/null || true
+pkill -f "server.py --port 7861" 2>/dev/null && sleep 1 || true
 mkdir -p "$HOME/Applications"
 rm -rf "$DEST"
 cp -R "$BUILD" "$DEST"
