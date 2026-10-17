@@ -382,6 +382,8 @@ select {
 select:focus { outline: none; border-color: #6366f1; }
 
 .status { margin-left: auto; font-size: 12px; color: #9ca3af; }
+
+.embed header, .embed .input-card { display: none; }
 </style>
 </head>
 <body>
@@ -449,10 +451,40 @@ select:focus { outline: none; border-color: #6366f1; }
 
   function onSpeedChange() {
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
+    savePrefs();
     invalidateCache();
   }
 
-  function onVoiceChange() { invalidateCache(); }
+  function onVoiceChange() { savePrefs(); invalidateCache(); }
+
+  // Remember voice and speed across windows. Storage can be unavailable
+  // (private mode, blocked site data), in which case the defaults stay.
+  function savePrefs() {
+    try {
+      localStorage.setItem('reader.prefs', JSON.stringify({ voice: voice(), speed: speed() }));
+    } catch {}
+  }
+
+  function restorePrefs() {
+    let prefs;
+    try { prefs = JSON.parse(localStorage.getItem('reader.prefs')); } catch {}
+    if (!prefs) return;
+    const select = document.getElementById('voiceSelect');
+    if ([...select.options].some(o => o.value === prefs.voice)) select.value = prefs.voice;
+    const slider = document.getElementById('speedSlider');
+    if (prefs.speed >= +slider.min && prefs.speed <= +slider.max) slider.value = prefs.speed;
+    document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
+  }
+
+  // Embedded in the macOS app: no input card, and the app pushes text in.
+  if (new URLSearchParams(location.search).has('embed')) document.body.classList.add('embed');
+  restorePrefs();
+
+  // Called by the macOS app with the text the user selected.
+  async function readerLoad(text) {
+    await loadSentences(text);
+    if (sentences.length) playFrom(0);
+  }
 
   async function uploadFile(input) {
     const file = input.files[0];
@@ -686,5 +718,17 @@ select:focus { outline: none; border-color: #6366f1; }
 </html>
 """
 
+def warm_up():
+    # Load the model and default voice up front so the first request isn't slow.
+    with _synth_lock:
+        get_pipeline().load_voice("bf_emma")
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=7860)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=7860)
+    args = parser.parse_args()
+    threading.Thread(target=warm_up, daemon=True).start()
+    uvicorn.run(app, host="127.0.0.1", port=args.port)
