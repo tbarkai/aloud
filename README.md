@@ -21,7 +21,7 @@ The first time it speaks, Kokoro downloads its weights from Hugging Face, about 
 ## Install the macOS app
 
 ```bash
-git clone <this repo> aloud
+git clone https://github.com/tbarkai/aloud.git
 ```
 
 ```bash
