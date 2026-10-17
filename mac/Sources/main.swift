@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if Date() < AppActivation.ownReopenUntil { return false }
         showReader()
         return false
     }

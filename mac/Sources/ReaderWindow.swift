@@ -84,11 +84,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
     }
 
     func show() {
-        // macOS may decline to activate a background app; bring the window
-        // to the front regardless so it never opens hidden behind the source app.
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        window.bringToFront()
     }
 
     /// Queues `text` to be read once the page is up; call `serverReady()` after.
@@ -187,5 +183,34 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
     func windowWillClose(_ notification: Notification) {
         // Stop reading when the window goes away; the page stays loaded for next time.
         webView.evaluateJavaScript("pause()")
+    }
+}
+
+extension NSWindow {
+    /// Shows the window in front with keyboard focus.
+    func bringToFront() {
+        AppActivation.activate()
+        makeKeyAndOrderFront(nil)
+        // Ordered front even if activation is slow or refused, so the window
+        // never opens hidden behind the app the user came from.
+        orderFrontRegardless()
+    }
+}
+
+@MainActor
+enum AppActivation {
+    /// Until then, a reopen event comes from our own activation request
+    /// rather than from the user, and must not open the reader.
+    static var ownReopenUntil = Date.distantPast
+
+    static func activate() {
+        guard !NSApp.isActive else { return }
+        // macOS refuses NSApp.activate() from a background menu bar app, even
+        // right after a click on its menu bar icon. Asking Launch Services to
+        // open the app, as `open -a` does, is honored.
+        ownReopenUntil = Date().addingTimeInterval(1)
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config)
     }
 }

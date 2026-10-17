@@ -242,8 +242,6 @@ final class SettingsWindow {
     }
 
     func show() {
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        window.bringToFront()
     }
 }
