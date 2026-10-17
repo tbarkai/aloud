@@ -1,5 +1,9 @@
 import re
 import io
+import os
+import secrets
+import socket
+import sys
 import threading
 import uuid
 import wave
@@ -9,13 +13,21 @@ import markdown as md
 from bs4 import BeautifulSoup
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Request, Response, UploadFile, File
 from fastapi.responses import HTMLResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 from kokoro import KPipeline
 
 SAMPLE_RATE = 24000
 app = FastAPI()
+# A web page can point its own domain at 127.0.0.1 (DNS rebinding) and then
+# read this server's responses as same-origin. Its requests still name that
+# domain in Host, so only accept our own names.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+# Set when run by the Mac app: every request must then carry it in this cookie.
+TOKEN_COOKIE = "aloud_token"
+app.state.token = None
 sessions: dict[str, list[str]] = {}
 _pipeline = None
 # Serializes synthesis (and the lazy model load inside it). torch already uses
@@ -33,6 +45,15 @@ VOICES = {
     "bm_fable": "Fable (M)",
 }
 Voice = Literal[tuple(VOICES)]
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    token = app.state.token
+    sent = request.cookies.get(TOKEN_COOKIE, "")
+    if token and not secrets.compare_digest(sent.encode(), token.encode()):
+        return Response(status_code=403)
+    return await call_next(request)
 
 
 def get_pipeline() -> KPipeline:
@@ -1094,11 +1115,39 @@ def warm_up():
         get_pipeline().load_voice("bf_emma")
 
 
+def exit_when_stdin_closes():
+    # The Mac app holds our stdin open, so EOF means it quit or crashed.
+    sys.stdin.read()
+    os._exit(0)
+
+
+def run_for_app():
+    app.state.token = os.environ["ALOUD_TOKEN"]
+    threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    # Listening now lets requests queue until uvicorn starts serving.
+    sock.listen()
+    # Report the port, then point stdout at the log (stderr). That closes the
+    # app's pipe, which tells it the line is complete.
+    print(sock.getsockname()[1], flush=True)
+    os.dup2(2, 1)
+    uvicorn.Server(uvicorn.Config(app)).run(sockets=[sock])
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument(
+        "--app", action="store_true",
+        help="run for the Mac app: pick a free port and print it, require the "
+        "ALOUD_TOKEN environment variable as a cookie, and exit when stdin closes",
+    )
     args = parser.parse_args()
     threading.Thread(target=warm_up, daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    if args.app:
+        run_for_app()
+    else:
+        uvicorn.run(app, host="127.0.0.1", port=args.port)

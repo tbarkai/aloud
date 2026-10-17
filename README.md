@@ -34,7 +34,7 @@ mac/install.sh
 
 The script sets up the Python environment, builds `Aloud.app`, installs it to `~/Applications`, registers the Read in Aloud service and launches the app. A waveform icon appears in the menu bar.
 
-The app runs `server.py` from this checkout on port 7861. It doesn't carry its own copy. So run `mac/install.sh` again after you change any code here, and after you move the folder.
+The app runs `server.py` from this checkout on a free local port. It doesn't carry its own copy. So run `mac/install.sh` again after you change any code here, and after you move the folder.
 
 ### Using it
 

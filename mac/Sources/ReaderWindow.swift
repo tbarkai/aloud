@@ -12,6 +12,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
     private let progressLine = ProgressLine()
     private var pageLoaded = false
     private var loadingReader = false
+    private var server: ServerEndpoint?
     private var pending: (text: String, markdown: Bool)?
 
     init(settings: Settings) {
@@ -95,12 +96,19 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
         if pageLoaded { deliverPending() }
     }
 
-    func serverReady() {
-        guard !pageLoaded, !loadingReader else { return }
+    func serverReady(at server: ServerEndpoint) {
+        // A restarted server listens somewhere else, so a page from the old one is dead.
+        guard server != self.server || (!pageLoaded && !loadingReader) else { return }
+        self.server = server
+        pageLoaded = false
         loadingReader = true
-        var components = URLComponents(url: Server.url, resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: server.url, resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "embed", value: "1")]
-        webView.load(URLRequest(url: components.url!))
+        let request = URLRequest(url: components.url!)
+        Task {
+            await webView.configuration.websiteDataStore.httpCookieStore.setCookie(server.cookie)
+            webView.load(request)
+        }
     }
 
     func showMessage(_ message: String) {
@@ -130,7 +138,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard webView.url?.host == Server.url.host else { return }
+        guard let server, webView.url?.port == server.url.port else { return }
         loadingReader = false
         pageLoaded = true
         webView.evaluateJavaScript("syncApp()")

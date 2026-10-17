@@ -103,9 +103,8 @@ final class Settings: ObservableObject {
         startAtLogin = SMAppService.mainApp.status
     }
 
-    func loadVoices() async {
-        let url = Server.url.appendingPathComponent("api/voices")
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
+    func loadVoices(from server: ServerEndpoint) async {
+        guard let (data, _) = try? await URLSession.shared.data(for: server.request("api/voices")),
               let list = try? JSONDecoder().decode([Voice].self, from: data)
         else { return }
         voices = list

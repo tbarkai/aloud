@@ -6,6 +6,11 @@ from fastapi.testclient import TestClient
 from server import app, split_sentences, strip_markdown, to_pcm16
 
 
+def make_client(**kwargs) -> TestClient:
+    # The server only answers requests addressed to 127.0.0.1 or localhost.
+    return TestClient(app, base_url="http://127.0.0.1", **kwargs)
+
+
 class StripMarkdownTests(unittest.TestCase):
     def test_inline_markup_does_not_add_line_breaks(self):
         markdown = "This is **bold** and [a link](https://example.com)."
@@ -78,7 +83,7 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(pcm.tolist(), [32767, -32767])
 
     def test_out_of_range_audio_params_are_rejected(self):
-        client = TestClient(app)
+        client = make_client()
         for params in ({"speed": 0}, {"voice": "/tmp/evil.pt"}):
             with self.subTest(params=params):
                 res = client.get(
@@ -89,18 +94,41 @@ class AudioTests(unittest.TestCase):
 
 class UploadTests(unittest.TestCase):
     def test_non_utf8_upload_is_a_client_error(self):
-        res = TestClient(app).post(
+        res = make_client().post(
             "/api/upload", files={"file": ("a.txt", "caf\xe9".encode("cp1252"))}
         )
 
         self.assertEqual(res.status_code, 400)
 
     def test_utf8_bom_is_not_part_of_the_text(self):
-        res = TestClient(app).post(
+        res = make_client().post(
             "/api/upload", files={"file": ("a.md", "\ufeffHello".encode("utf-8"))}
         )
 
         self.assertEqual(res.json()["text"], "Hello")
+
+
+class AccessTests(unittest.TestCase):
+    def setUp(self):
+        app.state.token = "secret"
+        self.addCleanup(setattr, app.state, "token", None)
+
+    def test_requests_without_the_app_token_are_rejected(self):
+        for cookies in ({}, {"aloud_token": "guess"}):
+            with self.subTest(cookies=cookies):
+                res = make_client(cookies=cookies).get("/api/voices")
+                self.assertEqual(res.status_code, 403)
+
+    def test_requests_with_the_app_token_are_served(self):
+        res = make_client(cookies={"aloud_token": "secret"}).get("/api/voices")
+
+        self.assertEqual(res.status_code, 200)
+
+    def test_requests_for_another_host_are_rejected(self):
+        # A page that rebinds its own domain to 127.0.0.1 still sends that domain.
+        res = TestClient(app, base_url="http://attacker.example", cookies={"aloud_token": "secret"}).get("/")
+
+        self.assertEqual(res.status_code, 400)
 
 
 if __name__ == "__main__":

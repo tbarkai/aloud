@@ -28,8 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Start the server (and its model warm-up) now, so the first selection reads quickly.
         Task {
-            try? await server.ensureRunning()
-            await settings.loadVoices()
+            if let endpoint = try? await server.ensureRunning() { await settings.loadVoices(from: endpoint) }
         }
     }
 
@@ -76,8 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reader.read(text, markdown: markdown)
         Task {
             do {
-                try await server.ensureRunning()
-                reader.serverReady()
+                reader.serverReady(at: try await server.ensureRunning())
             } catch {
                 reader.showMessage(error.localizedDescription)
             }
@@ -104,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         becomeRegularApp()
         reader.show()
         Task {
-            if (try? await server.ensureRunning()) != nil { reader.serverReady() }
+            if let endpoint = try? await server.ensureRunning() { reader.serverReady(at: endpoint) }
         }
     }
 
@@ -114,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.refreshStartAtLogin()
         settingsWindow.show()
         Task {
-            if (try? await server.ensureRunning()) != nil { await settings.loadVoices() }
+            if let endpoint = try? await server.ensureRunning() { await settings.loadVoices(from: endpoint) }
         }
     }
 
