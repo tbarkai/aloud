@@ -91,9 +91,6 @@ def generate_silence_wav(duration: float) -> bytes:
     return buf.getvalue()
 
 
-LEAD_IN_FRAMES = int(SAMPLE_RATE * 0.05)  # 50ms lead-in to avoid clipping
-
-
 def to_pcm16(audio: np.ndarray) -> bytes:
     # Kokoro occasionally overshoots ±1.0; clip so peaks saturate instead of wrapping.
     return (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
@@ -112,7 +109,6 @@ def generate_wav(text: str, voice: str, speed: float) -> bytes:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(b"\x00" * LEAD_IN_FRAMES * 2)
         for chunk in chunks:
             wf.writeframes(to_pcm16(chunk))
     return buf.getvalue()
@@ -479,38 +475,16 @@ body.dragging::after {
   let sentences = [];
   let currentIndex = 0;
   let isPlaying = false;
-  let currentAudio = null;
 
   const voice = () => document.getElementById('voiceSelect').value;
   const speed = () => parseFloat(document.getElementById('speedSlider').value);
-  const cacheKey = (i) => `${sessionId}:${i}:${voice()}:${speed()}`;
+  const cacheKey = (i, s = speed()) => `${sessionId}:${i}:${voice()}:${s}`;
 
   function onSpeedChange() {
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
     savePrefs();
     speedChanged();
     syncApp();
-  }
-
-  // Speed applies at once: the sentence being read (or paused) is sped up or
-  // slowed down in the player, and the ones after it are re-synthesized at the
-  // new speed, which sounds more natural than stretching.
-  function speedChanged() {
-    invalidateCache({ keepPaused: true });
-    for (const a of [currentAudio, paused?.audio]) {
-      if (a) a.playbackRate = speed() / a.synthSpeed;
-    }
-    refillAhead();
-  }
-
-  // A slider drag sends many changes; synthesize once it settles.
-  let refillTimer;
-  function refillAhead() {
-    clearTimeout(refillTimer);
-    const gen = playGen;
-    refillTimer = setTimeout(() => {
-      if (isPlaying && gen === playGen) prefetchAhead(currentIndex + 1, gen);
-    }, 300);
   }
 
   // In the macOS app, the native toolbar mirrors the page's playback state.
@@ -535,7 +509,7 @@ body.dragging::after {
     syncApp();
   }
 
-  function onVoiceChange() { savePrefs(); invalidateCache(); }
+  function onVoiceChange() { savePrefs(); voiceChanged(); }
 
   // Remember voice and speed across windows. Storage can be unavailable
   // (private mode, blocked site data), in which case the defaults stay.
@@ -641,7 +615,7 @@ body.dragging::after {
   // Called by the macOS app when the voice changes in its settings.
   function readerSetVoice(v) {
     document.getElementById('voiceSelect').value = v;
-    invalidateCache();
+    voiceChanged();
   }
 
   async function uploadFile(input) {
@@ -693,7 +667,8 @@ body.dragging::after {
     sessionId = data.session_id;
     sentences = data.sentences;
     currentIndex = 0;
-    invalidateCache();
+    paused = null;
+    clearBuffers();
     renderSentences();
     document.getElementById('playBtn').disabled = false;
     setStatus(`${sentences.length} sentence${sentences.length !== 1 ? 's' : ''}`, true);
@@ -743,86 +718,195 @@ body.dragging::after {
     document.querySelectorAll('.sentence').forEach(el => el.classList.remove('active', 'played'));
   }
 
-  // audioReady: key -> Audio element (loaded, ready to play)
-  // audioPending: key -> Promise<Audio>
-  let audioReady = {};
-  let audioPending = {};
-  // Bumped whenever playback stops or restarts, so callbacks from an earlier
-  // run see they are stale and don't start a second, overlapping playback.
+  // ---- Playback: one continuous Web Audio stream ----
+  //
+  // Every sentence is synthesized as its own clip, but they all play through a
+  // single AudioContext, scheduled back to back. The output never restarts
+  // between sentences, so nothing is lost while a new player warms up, and
+  // there are no gaps. Highlight and progress follow the stream's clock.
+
+  let ctx = null;
+  let buffers = new Map();  // cacheKey -> { index, speed, promise: Promise<AudioBuffer> }
+  let scheduled = [];       // clips queued in the stream, in play order
+  let nextIndex = 0;        // next sentence to queue
+  let scheduledEnd = 0;     // stream time when the last queued clip ends
+  let paused = null;        // { index, frac }: where pause() stopped, as a fraction of the sentence
+  // Bumped whenever the queue is replanned (pause, seek, speed or voice
+  // change), so async work from an earlier plan sees it is stale.
   let playGen = 0;
+  let ticker = null;
+  let idleTimer = null;
+  // True while playFrom waits for its first clip. The queue state still
+  // describes the old plan then, so nothing may be queued from it.
+  let starting = false;
+  const LOOKAHEAD = 4;       // sentences synthesized ahead of the one playing
+  const QUEUE_SECONDS = 4;   // audio queued in the stream ahead of the playhead
+  const FADE = 0.03;         // seconds, to avoid clicks when cutting a clip
+
+  function audioContext() {
+    ctx ||= new (window.AudioContext || window.webkitAudioContext)();
+    return ctx;
+  }
+
+  // Stream time the listener is hearing now.
+  const playhead = () => ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0);
+  const clipEnd = clip => clip.startAt + clip.duration - clip.offset;
+
+  function clearBuffers(keep = () => false) {
+    for (const [key, entry] of buffers) if (!keep(entry)) buffers.delete(key);
+  }
+
+  // A clip the server or decoder rejected is skipped; a network failure stops playback.
+  class SkippableError extends Error {}
+
+  function getBuffer(index, synthSpeed = speed()) {
+    const key = cacheKey(index, synthSpeed);
+    if (!buffers.has(key)) {
+      const cache = buffers;
+      const promise = fetch(`/api/audio?session_id=${sessionId}&index=${index}&voice=${voice()}&speed=${synthSpeed}`)
+        .then(r => {
+          if (!r.ok) throw new SkippableError(`HTTP ${r.status}`);
+          return r.arrayBuffer();
+        })
+        .then(data => audioContext().decodeAudioData(data).catch(err => { throw new SkippableError(err.message); }));
+      cache.set(key, { index, speed: synthSpeed, promise });
+      // A failed fetch must not stay cached, or retrying would fail forever.
+      promise.catch(() => { if (cache.get(key)?.promise === promise) cache.delete(key); });
+    }
+    return buffers.get(key).promise;
+  }
+
   // The server synthesizes one sentence at a time, so fetch sequentially:
   // the sentence needed now never queues behind ones needed later.
-  const LOOKAHEAD = 4;
-
-  function invalidateCache({ keepPaused = false } = {}) {
-    Object.values(audioReady).forEach(a => URL.revokeObjectURL(a.src));
-    audioReady = {};
-    audioPending = {};
-    // Paused audio has the old voice (or text); resume restarts the sentence
-    // instead. A speed change keeps it and adjusts its playback rate.
-    if (!keepPaused) discardPaused();
-  }
-
-  // The audio that was playing when paused, so play continues mid-sentence.
-  let paused = null;  // { audio, index }
-
-  function discardPaused() {
-    if (paused) URL.revokeObjectURL(paused.audio.src);
-    paused = null;
-  }
-
-  function prefetch(index) {
-    const key = cacheKey(index);
-    if (audioReady[key]) return Promise.resolve(audioReady[key]);
-    if (audioPending[key]) return audioPending[key];
-    // A fetch that finishes after invalidateCache() must not land in the new cache.
-    const ready = audioReady, pending = audioPending;
-    const synthSpeed = speed();
-    const url = `/api/audio?session_id=${sessionId}&index=${index}&voice=${voice()}&speed=${synthSpeed}`;
-    pending[key] = fetch(url)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.blob();
-      })
-      .then(blob => {
-        const audio = new Audio(URL.createObjectURL(blob));
-        audio.synthSpeed = synthSpeed;
-        audio.preservesPitch = true;
-        audio.load();
-        if (ready === audioReady) ready[key] = audio;
-        return audio;
-      })
-      .finally(() => { delete pending[key]; });
-    return pending[key];
-  }
-
   async function prefetchAhead(index, gen) {
     const end = Math.min(index + LOOKAHEAD, sentences.length);
     for (let i = index; i < end && gen === playGen; i++) {
-      try { await prefetch(i); } catch { return; }
+      try { await getBuffer(i); } catch { /* the queue reports or skips it */ }
     }
   }
 
-  function setupAndPlay(audio, index, gen) {
-    if (gen !== playGen) return;
-    currentAudio = audio;
-    delete audioReady[cacheKey(index)];
-    highlight(index);
-    setStatus(`${index + 1} / ${sentences.length}`, true);
-    setProgress(index / sentences.length);
-    audio.ontimeupdate = () => {
-      if (gen === playGen && audio.duration) {
-        setProgress((index + audio.currentTime / audio.duration) / sentences.length);
+  function schedule(index, buffer, synthSpeed, startAt, offset, fadeIn) {
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = ctx.createGain();
+    source.connect(gain).connect(ctx.destination);
+    if (fadeIn) {
+      gain.gain.setValueAtTime(0, startAt);
+      gain.gain.linearRampToValueAtTime(1, startAt + FADE);
+    }
+    // Clip boundaries also drive the queue: audio events keep firing in
+    // background tabs where the ticker's timer is throttled.
+    source.onended = () => { gain.disconnect(); if (isPlaying) tick(); };
+    source.start(startAt, offset);
+    scheduled.push({ index, speed: synthSpeed, source, gain, startAt, offset, duration: buffer.duration });
+    nextIndex = index + 1;
+    scheduledEnd = clipEnd(scheduled.at(-1));
+  }
+
+  // Stops queued clips except those `keep` accepts; with `at`, one already
+  // playing fades out instead of clicking.
+  function stopScheduled(at = null, keep = () => false) {
+    const kept = [];
+    for (const clip of scheduled) {
+      if (keep(clip)) { kept.push(clip); continue; }
+      if (at != null && clip.startAt < at) {
+        clip.gain.gain.cancelScheduledValues(at);
+        clip.gain.gain.setValueAtTime(clip.gain.gain.value, at);
+        clip.gain.gain.linearRampToValueAtTime(0, at + FADE);
+        clip.source.stop(at + FADE);
+      } else {
+        clip.source.stop();
       }
+    }
+    scheduled = kept;
+  }
+
+  // Drops everything queued after `clip` and queues afresh from the next
+  // sentence, for changes that should apply from the next sentence on.
+  function requeueAfter(clip) {
+    stopScheduled(null, c => c.startAt <= clip.startAt);
+    nextIndex = clip.index + 1;
+    scheduledEnd = clipEnd(clip);
+    pump(++playGen);
+  }
+
+  // The clip at stream time `t` (default: what is being heard) and the position in it.
+  function current(t = ctx && playhead()) {
+    if (!ctx) return null;
+    const clip = scheduled.find(c => t < clipEnd(c));
+    return clip ? { clip, pos: Math.max(clip.offset, clip.offset + t - clip.startAt) } : null;
+  }
+
+  // Keeps the stream fed: always the next sentence after the one playing,
+  // and at least QUEUE_SECONDS of audio.
+  let pumpingGen = -1;
+  async function pump(gen) {
+    if (starting || pumpingGen === gen) return;
+    pumpingGen = gen;
+    const needMore = () => {
+      const upcoming = scheduled.filter(c => clipEnd(c) > ctx.currentTime).length;
+      return upcoming < 2 || scheduledEnd - ctx.currentTime < QUEUE_SECONDS;
     };
-    const next = () => {
-      URL.revokeObjectURL(audio.src);
-      if (currentAudio === audio) currentAudio = null;
-      if (gen === playGen) playIndex(index + 1);
-    };
-    audio.onended = next;
-    audio.onerror = next;
-    audio.play();
+    try {
+      while (gen === playGen && nextIndex < sentences.length && needMore()) {
+        const index = nextIndex;
+        const synthSpeed = speed();
+        let buffer;
+        try {
+          buffer = await getBuffer(index, synthSpeed);
+        } catch (err) {
+          if (gen !== playGen || index !== nextIndex) return;
+          if (!(err instanceof SkippableError)) return playbackFailed(err);
+          console.warn(`Skipping sentence ${index + 1}:`, err);
+          nextIndex = index + 1;
+          continue;
+        }
+        if (gen !== playGen || index !== nextIndex) return;
+        // Speed changed while synthesizing: request it again at the new speed.
+        if (synthSpeed !== speed()) continue;
+        // If synthesis fell behind, the stream has a gap rather than an overlap.
+        schedule(index, buffer, synthSpeed, Math.max(scheduledEnd, ctx.currentTime + 0.02), 0, false);
+        prefetchAhead(nextIndex, gen);
+      }
+    } finally {
+      if (pumpingGen === gen) pumpingGen = -1;
+    }
+  }
+
+  let lastProgressAt = 0;
+  function tick() {
+    if (starting) return;
+    const now = current();
+    if (!now) {
+      if (nextIndex >= sentences.length && scheduledEnd <= ctx.currentTime) finish();
+      else pump(playGen);
+      return;
+    }
+    const { clip, pos } = now;
+    if (clip.index !== currentIndex) {
+      currentIndex = clip.index;
+      highlight(clip.index);
+      setStatus(`${clip.index + 1} / ${sentences.length}`, true);
+    }
+    // The ticker runs every 50 ms for a responsive highlight; progress
+    // (which also messages the app) only needs a few updates a second.
+    if (performance.now() - lastProgressAt > 200) {
+      lastProgressAt = performance.now();
+      setProgress((clip.index + pos / clip.duration) / sentences.length);
+    }
+    scheduled = scheduled.filter(c => clipEnd(c) > ctx.currentTime - 1);
+    // Played sentences won't be needed again unless clicked; drop their audio.
+    clearBuffers(entry => entry.index >= currentIndex - 1);
+    pump(playGen);
+  }
+
+  function finish() {
+    pause();
+    paused = null;
+    clearHighlights();
+    currentIndex = 0;
+    setStatus('Done', true);
+    setProgress(1);
   }
 
   function playbackFailed(err) {
@@ -831,64 +915,131 @@ body.dragging::after {
     console.error(err);
   }
 
-  function playIndex(index) {
-    if (!isPlaying) return;
-    if (index >= sentences.length) {
-      pause();
-      discardPaused();
-      clearHighlights();
-      currentIndex = 0;
-      setStatus('Done', true);
-      setProgress(1);
-      return;
-    }
-    currentIndex = index;
-    const gen = playGen;
-    const ready = audioReady[cacheKey(index)];
-    if (ready) {
-      // Play synchronously so a click's user-gesture permission still applies.
-      setupAndPlay(ready, index, gen);
-      prefetchAhead(index + 1, gen);
-    } else {
-      prefetch(index).then(
-        audio => { setupAndPlay(audio, index, gen); prefetchAhead(index + 1, gen); },
-        err => { if (gen === playGen) playbackFailed(err); },
-      );
-    }
-  }
-
-  function playFrom(index) {
-    playGen++;
+  async function playFrom(index) {
+    const context = audioContext();
+    const wasRunning = context.state === 'running';
+    // Called synchronously so a click's user-gesture permission applies.
+    if (!wasRunning) context.resume();
+    clearTimeout(idleTimer);
+    stopScheduled();
+    const gen = ++playGen;
+    starting = true;
     isPlaying = true;
     setIcon(true);
-    const resume = paused;
+    // `paused` stays set until the clip is queued, so pausing again while
+    // this one loads keeps the place.
+    const resume = paused?.index === index ? paused : null;
+    currentIndex = index;
+    highlight(index);
+    setStatus(`${index + 1} / ${sentences.length}`, true);
+    let buffer, synthSpeed;
+    do {
+      synthSpeed = speed();
+      try {
+        buffer = await getBuffer(index, synthSpeed);
+      } catch (err) {
+        if (gen !== playGen) return;
+        if (err instanceof SkippableError && index + 1 < sentences.length) {
+          console.warn(`Skipping sentence ${index + 1}:`, err);
+          paused = null;
+          return playFrom(index + 1);
+        }
+        return playbackFailed(err);
+      }
+      if (gen !== playGen) return;
+    } while (synthSpeed !== speed());  // speed changed while synthesizing
+    if (context.state !== 'running') await context.resume();
+    if (gen !== playGen) return;
+    // A just-started output gets a moment before sound, and a resumed
+    // sentence fades in rather than starting on a click.
+    const startAt = context.currentTime + (wasRunning ? 0.05 : 0.15);
+    const offset = resume ? Math.min(resume.frac, 0.999) * buffer.duration : 0;
     paused = null;
-    if (resume && resume.index === index) {
-      // play() continues from where pause() stopped the element.
-      currentIndex = index;
-      setupAndPlay(resume.audio, index, playGen);
-      prefetchAhead(index + 1, playGen);
-      return;
-    }
-    if (resume) URL.revokeObjectURL(resume.audio.src);
-    playIndex(index);
+    scheduled = [];
+    schedule(index, buffer, synthSpeed, startAt, offset, offset > 0);
+    starting = false;
+    clearInterval(ticker);
+    ticker = setInterval(tick, 50);
+    pump(gen);
+    prefetchAhead(index + 1, gen);
   }
 
   function pause() {
+    const now = isPlaying ? current() : null;
+    if (now) paused = { index: now.clip.index, frac: now.pos / now.clip.duration };
     playGen++;
+    starting = false;
     isPlaying = false;
     setIcon(false);
-    if (currentAudio) {
-      currentAudio.pause();
-      paused = { audio: currentAudio, index: currentIndex };
-      currentAudio = null;
+    clearInterval(ticker);
+    if (ctx) {
+      stopScheduled(ctx.currentTime);
+      // Release the audio device after a while; resuming starts it again.
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { if (!isPlaying) ctx.suspend(); }, 30000);
     }
+  }
+
+  // Speed applies to the sentence being read: it is re-synthesized at the new
+  // speed and swapped in at the same relative position, so the voice keeps its
+  // natural pitch. A slider drag sends many changes; swap once it settles.
+  let speedTimer;
+  let swapGen = 0;
+  function speedChanged() {
+    clearTimeout(speedTimer);
+    speedTimer = setTimeout(swapSpeed, 300);
+  }
+
+  async function swapSpeed() {
+    // Only the newest change matters; an earlier swap still synthesizing gives way.
+    const mine = ++swapGen;
+    const target = speed();
+    clearBuffers(entry => entry.speed === target);
+    // While paused, the stored fraction maps onto the new speed's audio on resume.
+    // While the first clip is loading, playFrom requests it again at the new speed.
+    while (isPlaying) {
+      // Swap in render time, not heard time: the old clip's sample rendered
+      // at `at` must line up with the new clip's sample rendered at `at`.
+      const found = current(ctx.currentTime + 0.02);
+      if (!found) return;
+      const clip = found.clip;
+      // Queued at the new speed already (e.g. while the last swap synthesized):
+      // only clips after it may still be at an old speed.
+      if (clip.speed === target) {
+        if (scheduled.some(c => c.startAt > clip.startAt && c.speed !== target)) requeueAfter(clip);
+        return;
+      }
+      const gen = playGen;
+      let buffer;
+      try { buffer = await getBuffer(clip.index, target); } catch { return; }
+      if (mine !== swapGen || gen !== playGen) return;
+      const at = ctx.currentTime + 0.02;
+      // Moved on to the next sentence while synthesizing: check that one.
+      if (current(at)?.clip !== clip) continue;
+      const frac = (clip.offset + Math.max(0, at - clip.startAt)) / clip.duration;
+      stopScheduled(at);
+      const g = ++playGen;
+      schedule(clip.index, buffer, target, at, Math.min(frac, 0.999) * buffer.duration, true);
+      pump(g);
+      prefetchAhead(clip.index + 1, g);
+      return;
+    }
+  }
+
+  // A sentence can't change voice midway: the new voice starts with the next one.
+  function voiceChanged() {
+    clearBuffers();
+    if (paused) paused.frac = 0;
+    if (!isPlaying) return;
+    const now = current();
+    if (now) requeueAfter(now.clip);
   }
 
   // Called by the macOS app (Edit > Clear).
   function readerClear() {
     pause();
-    invalidateCache();
+    paused = null;
+    clearBuffers();
     sessionId = null;
     sentences = [];
     currentIndex = 0;
@@ -907,7 +1058,7 @@ body.dragging::after {
     const wasPlaying = isPlaying;
     if (isPlaying) pause();
     // Clicking a sentence reads it from its start, even the paused one.
-    discardPaused();
+    paused = null;
     currentIndex = index;
     highlight(index);
     setProgress(index / sentences.length);
