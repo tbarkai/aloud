@@ -1,8 +1,8 @@
 # Aloud
 
-Aloud reads text to you with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), a small open text-to-speech model that runs locally. Nothing leaves your machine. It uses Kokoro's British English voices.
+Aloud reads text to you with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), a small open text-to-speech model, running on your Mac. Your text never leaves it. The voices are Kokoro's British English ones.
 
-You get the text on screen as it's read. The current sentence is highlighted, and clicking any sentence jumps there. Speed changes apply to the sentence being read, without changing the voice's pitch.
+The text stays on screen while it's read. The reader highlights the current sentence, and clicking any sentence jumps there. Speed changes apply to the sentence being read, without changing the voice's pitch.
 
 There are three ways to use it.
 
@@ -40,11 +40,11 @@ The app runs `server.py` from this checkout on a free local port. It doesn't car
 
 - Select text, right-click, and choose Read in Aloud. In apps with several services it sits under Services. Most native apps and Safari support this. Many Electron apps, such as Slack and VS Code, don't.
 - Click the menu bar icon, or press ⌃⌘S from any app, to open the reader. Right-click the icon for its menu.
-- In the reader, ⌘V reads whatever is on the clipboard. You can also drop a `.md` or `.txt` file on the window or the Dock icon. Markdown is stripped to plain text first.
+- In the reader, ⌘V reads whatever is on the clipboard. You can also drop a `.md` or `.txt` file on the window or the Dock icon. Aloud strips Markdown to plain text first.
 - Click a sentence to jump to it. Space plays and pauses. ⌘K clears the reader.
 - The speed slider in the toolbar applies to the current text only. New text starts at the default speed.
 
-Open Settings from the menu bar menu, or with ⌘, while a reader window is open. It has the voice, the default speed, the Show Reader shortcut and Start at Login.
+Open Settings from the menu bar menu, or with ⌘, while a reader window is open. There you pick the voice, the default speed and the Show Reader shortcut, and turn on Start at Login.
 
 To read a selection with a key instead of the right-click menu, open System Settings › Keyboard › Keyboard Shortcuts › Services › Text, find Read in Aloud, and give it a shortcut. Pick one with ⌘ that differs from the Show Reader shortcut.
 
