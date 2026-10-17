@@ -2,12 +2,13 @@ import AppKit
 import WebKit
 
 /// One reader window, reused for every selection. Shows the server's web UI
-/// in embed mode and pushes the selected text into it.
+/// in embed mode under a native toolbar, and pushes the selected text into it.
 @MainActor
-final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
+final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     let window: NSWindow
     private let webView: WKWebView
     private let settings: Settings
+    private let toolbar = ReaderToolbar()
     private var pageLoaded = false
     private var loadingReader = false
     private var pending: (text: String, markdown: Bool)?
@@ -23,11 +24,17 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            // Full-size content: the page runs under the toolbar and scrolls beneath its glass.
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Kokoro Reader"
+        window.titleVisibility = .hidden
+        window.toolbar = toolbar.toolbar
+        window.toolbarStyle = .unified
+        // Text scrolling under the glass marks the edge; a separator line would double it.
+        window.titlebarSeparatorStyle = .none
         window.contentView = webView
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("ReaderWindow")
@@ -35,6 +42,26 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         super.init()
         window.delegate = self
         webView.navigationDelegate = self
+
+        webView.configuration.userContentController.add(self, name: "reader")
+
+        toolbar.onTogglePlay = { [weak self] in self?.webView.evaluateJavaScript("togglePlay()") }
+        toolbar.onSpeedChange = { [weak self] speed in
+            self?.webView.callAsyncJavaScript(
+                "readerSetSpeed(v)", arguments: ["v": speed], in: nil, in: .page
+            ) { _ in }
+        }
+    }
+
+    // The page reports playback state on every change; the toolbar mirrors it.
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let state = message.body as? [String: Any] else { return }
+        toolbar.update(
+            playing: state["playing"] as? Bool ?? false,
+            canPlay: state["canPlay"] as? Bool ?? false,
+            speed: (state["speed"] as? NSNumber)?.doubleValue ?? settings.defaultSpeed,
+            status: state["status"] as? String ?? ""
+        )
     }
 
     func show() {
@@ -64,6 +91,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
     func showMessage(_ message: String) {
         pageLoaded = false
         loadingReader = false
+        toolbar.update(playing: false, canPlay: false, speed: settings.defaultSpeed, status: "")
         let escaped = message
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -89,6 +117,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         guard webView.url?.host == Server.url.host else { return }
         loadingReader = false
         pageLoaded = true
+        webView.evaluateJavaScript("syncApp()")
         deliverPending()
     }
 

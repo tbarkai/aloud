@@ -420,9 +420,11 @@ body.dragging::after {
   z-index: 20;
 }
 
-/* Embedded in the macOS app: settings own the voice, the app supplies text. */
-.embed header, .embed .input, .embed .voice-group { display: none; }
-.embed .page { padding-top: 32px; }
+/* Embedded in the macOS app: settings own the voice, the app supplies text,
+   and a native toolbar replaces the controls bar. WebKit already keeps the
+   viewport below that toolbar and scrolls content under it. */
+.embed header, .embed .input, .embed .controls { display: none; }
+.embed .page { padding-top: 28px; padding-bottom: 64px; }
 </style>
 </head>
 <body>
@@ -487,6 +489,17 @@ body.dragging::after {
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
     savePrefs();
     invalidateCache();
+    syncApp();
+  }
+
+  // In the macOS app, the native toolbar mirrors the page's playback state.
+  function syncApp() {
+    window.webkit?.messageHandlers?.reader?.postMessage({
+      playing: isPlaying,
+      canPlay: !document.getElementById('playBtn').disabled,
+      speed: speed(),
+      status: document.getElementById('status').textContent,
+    });
   }
 
   function onVoiceChange() { savePrefs(); invalidateCache(); }
@@ -513,6 +526,7 @@ body.dragging::after {
   function setSpeed(value) {
     document.getElementById('speedSlider').value = value;
     document.getElementById('speedVal').textContent = speed().toFixed(1) + '×';
+    syncApp();
   }
 
   // Embedded in the macOS app: the app pushes text in, and its settings own
@@ -584,6 +598,12 @@ body.dragging::after {
       console.error(err);
     }
   });
+
+  // Called by the macOS app's toolbar speed slider.
+  function readerSetSpeed(v) {
+    setSpeed(v);
+    invalidateCache();
+  }
 
   // Called by the macOS app when the voice changes in its settings.
   function readerSetVoice(v) {
@@ -850,9 +870,13 @@ body.dragging::after {
   function setIcon(playing) {
     document.getElementById('iconPlay').style.display = playing ? 'none' : '';
     document.getElementById('iconPause').style.display = playing ? '' : 'none';
+    syncApp();
   }
 
-  function setStatus(msg) { document.getElementById('status').textContent = msg; }
+  function setStatus(msg) {
+    document.getElementById('status').textContent = msg;
+    syncApp();
+  }
 
   document.addEventListener('keydown', e => {
     if (e.code === 'Space' && e.target.tagName !== 'TEXTAREA') {
