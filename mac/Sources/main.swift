@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: NSMenu!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The "TTS" entry in the right-click menu is declared under NSServices in Info.plist.
+        // The "Read in Aloud" entry in the right-click menu is declared under NSServices in Info.plist.
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
         NSApp.mainMenu = makeMainMenu()
@@ -138,9 +138,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide Kokoro Reader", action: #selector(NSApplication.hide), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "Quit Kokoro Reader", action: #selector(NSApplication.terminate), keyEquivalent: "q")
-        main.addItem(submenu: appMenu, title: "Kokoro Reader")
+        appMenu.addItem(withTitle: "Hide Aloud", action: #selector(NSApplication.hide), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Aloud", action: #selector(NSApplication.terminate), keyEquivalent: "q")
+        main.addItem(submenu: appMenu, title: "Aloud")
 
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
@@ -164,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         // The default status-item size draws the circle small; 16pt fills the menu bar height.
         statusItem.button?.image = NSImage(
-            systemSymbolName: "waveform.circle", accessibilityDescription: "Kokoro Reader"
+            systemSymbolName: "waveform.circle", accessibilityDescription: "Aloud"
         )?.withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
 
         let menu = NSMenu()
@@ -172,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Show Reader", action: #selector(showReader), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Kokoro Reader", action: #selector(NSApplication.terminate), keyEquivalent: "")
+        menu.addItem(withTitle: "Quit Aloud", action: #selector(NSApplication.terminate), keyEquivalent: "")
         for item in menu.items where item.action != #selector(NSApplication.terminate) { item.target = self }
         statusMenu = menu
 

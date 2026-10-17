@@ -236,7 +236,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kokoro Reader</title>
+<title>Aloud</title>
 <style>
 :root {
   --bg: #ffffff;
@@ -430,7 +430,7 @@ body.dragging::after {
 <body>
 
 <div class="page">
-  <header><h1>Kokoro Reader</h1></header>
+  <header><h1>Aloud</h1></header>
 
   <div class="input">
     <textarea id="textInput" placeholder="Paste your text here…"></textarea>
@@ -549,7 +549,7 @@ body.dragging::after {
   if (EMBED) {
     document.body.classList.add('embed');
     placeholder.textContent =
-      'Select text in any app, right-click and choose TTS, press ⌘V to read the clipboard, or drop a .md or .txt file here.';
+      'Select text in any app, right-click and choose Read in Aloud, press ⌘V to read the clipboard, or drop a .md or .txt file here.';
   } else {
     restorePrefs();
   }

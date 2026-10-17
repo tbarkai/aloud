@@ -145,13 +145,13 @@ struct SettingsView: View {
                 }
             }
             Section {
-                // The TTS service's shortcut is owned by macOS, so this explains
+                // The Read in Aloud service's shortcut is owned by macOS, so this explains
                 // where to set it rather than recording it here.
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Read selected text")
                     Text(
-                        "Right-click selected text and choose TTS (under Services in some apps). "
-                            + "To use a key instead, open Keyboard Shortcuts › Services › Text › TTS "
+                        "Right-click selected text and choose Read in Aloud (under Services in some apps). "
+                            + "To use a key instead, open Keyboard Shortcuts › Services › Text › Read in Aloud "
                             + "and assign one that includes ⌘ and differs from the shortcut above."
                     )
                     .font(.callout)
@@ -172,7 +172,7 @@ struct SettingsView: View {
                 ))
             } footer: {
                 if settings.startAtLogin == .requiresApproval {
-                    Text("Allow Kokoro Reader in System Settings › General › Login Items.")
+                    Text("Allow Aloud in System Settings › General › Login Items.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -231,7 +231,7 @@ final class SettingsWindow {
 
     init(settings: Settings) {
         window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(settings: settings)))
-        window.title = "Kokoro Reader Settings"
+        window.title = "Aloud Settings"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.center()

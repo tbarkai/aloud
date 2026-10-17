@@ -17,7 +17,7 @@ final class Server {
         let dir = Bundle.main.object(forInfoDictionaryKey: "ReaderProjectDir") as? String ?? ""
         projectDir = URL(fileURLWithPath: dir)
         let logs = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/KokoroReader")
+            .appendingPathComponent("Library/Logs/Aloud")
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         logURL = logs.appendingPathComponent("server.log")
     }

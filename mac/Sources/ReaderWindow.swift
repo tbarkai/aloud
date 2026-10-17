@@ -30,7 +30,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
             backing: .buffered,
             defer: false
         )
-        window.title = "Kokoro Reader"
+        window.title = "Aloud"
         window.titleVisibility = .hidden
         window.toolbar = toolbar.toolbar
         window.toolbarStyle = .unified
