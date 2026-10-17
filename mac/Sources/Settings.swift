@@ -145,6 +145,27 @@ struct SettingsView: View {
                 }
             }
             Section {
+                // The TTS service's shortcut is owned by macOS, so this explains
+                // where to set it rather than recording it here.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Read selected text")
+                    Text(
+                        "Right-click selected text and choose TTS (under Services in some apps). "
+                            + "To use a key instead, open Keyboard Shortcuts › Services › Text › TTS "
+                            + "and assign one that includes ⌘ and differs from the shortcut above."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Button("Open Keyboard Settings…") {
+                        NSWorkspace.shared.open(
+                            URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
+                        )
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            Section {
                 Toggle("Start at login", isOn: Binding(
                     get: { settings.startAtLogin != .notRegistered && settings.startAtLogin != .notFound },
                     set: { settings.setStartAtLogin($0) }

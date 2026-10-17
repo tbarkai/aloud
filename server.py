@@ -336,9 +336,9 @@ button.text-btn:disabled { opacity: 0.5; cursor: default; }
 
 .sentence {
   cursor: pointer;
-  border-radius: 4px;
-  padding: 1px 2px;
-  margin: 0 -2px;
+  border-radius: 3px;
+  /* No side padding: any extra width after the final period reads as a trailing space. */
+  padding: 1px 0;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
   transition: background 0.12s, color 0.12s;
@@ -440,7 +440,7 @@ body.dragging::after {
   </div>
 
   <div id="readerContent">
-    <p class="placeholder" id="placeholder">Paste text above and click Process Text to begin.</p>
+    <p class="placeholder" id="placeholder">Paste text above and click Process Text, or drop a .md or .txt file here.</p>
   </div>
 </div>
 
@@ -523,7 +523,7 @@ body.dragging::after {
   if (EMBED) {
     document.body.classList.add('embed');
     placeholder.textContent =
-      'Select text in any app, right-click and choose TTS, or press ⌘V to read the clipboard.';
+      'Select text in any app, right-click and choose TTS, press ⌘V to read the clipboard, or drop a .md or .txt file here.';
   } else {
     restorePrefs();
   }
@@ -671,7 +671,18 @@ body.dragging::after {
       el.classList.toggle('played', i < index);
     });
     const active = document.querySelector(`.sentence[data-index="${index}"]`);
-    if (active) active.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (active) keepInView(active);
+  }
+
+  // Scroll once the sentence nears the top or bottom of the visible area
+  // (above the controls bar), bringing it back to about a third of the way down.
+  function keepInView(el) {
+    const r = el.getBoundingClientRect();
+    const visible = window.innerHeight - document.querySelector('.controls').offsetHeight;
+    const margin = visible * 0.2;
+    if (r.top < margin || r.bottom > visible - margin) {
+      window.scrollBy({ top: r.top - visible * 0.3, behavior: 'smooth' });
+    }
   }
 
   function clearHighlights() {
