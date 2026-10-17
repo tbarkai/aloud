@@ -1,8 +1,9 @@
 import AppKit
 
 /// The reader window's toolbar: play/pause, a speed slider for this text, and
-/// the progress status. Native items, so macOS draws them as Liquid Glass. The
-/// page owns playback; this mirrors its state and forwards clicks to it.
+/// a spot for messages such as playback errors (progress is a line below it).
+/// Native items, so macOS draws them as Liquid Glass. The page owns playback;
+/// this mirrors its state and forwards clicks to it.
 @MainActor
 final class ReaderToolbar: NSObject, NSToolbarDelegate {
     let toolbar = NSToolbar(identifier: "ReaderToolbar")
@@ -43,7 +44,7 @@ final class ReaderToolbar: NSObject, NSToolbarDelegate {
         statusLabel.alignment = .right
     }
 
-    func update(playing: Bool, canPlay: Bool, speed: Double, status: String) {
+    func update(playing: Bool, canPlay: Bool, speed: Double, message: String) {
         playItem.isEnabled = canPlay
         playItem.label = playing ? "Pause" : "Play"
         playItem.image = NSImage(
@@ -51,7 +52,7 @@ final class ReaderToolbar: NSObject, NSToolbarDelegate {
         )
         slider.doubleValue = speed
         speedLabel.stringValue = String(format: "%.1f×", speed)
-        statusLabel.stringValue = status
+        statusLabel.stringValue = message
     }
 
     @objc private func playClicked() {
@@ -92,7 +93,7 @@ final class ReaderToolbar: NSObject, NSToolbarDelegate {
             return item
         case .status:
             let item = NSToolbarItem(itemIdentifier: id)
-            item.label = "Progress"
+            item.label = "Status"
             item.view = statusLabel
             return item
         default:

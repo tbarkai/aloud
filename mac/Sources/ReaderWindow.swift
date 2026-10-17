@@ -9,6 +9,7 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
     private let webView: WKWebView
     private let settings: Settings
     private let toolbar = ReaderToolbar()
+    private let progressLine = ProgressLine()
     private var pageLoaded = false
     private var loadingReader = false
     private var pending: (text: String, markdown: Bool)?
@@ -35,7 +36,24 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
         window.toolbarStyle = .unified
         // Text scrolling under the glass marks the edge; a separator line would double it.
         window.titlebarSeparatorStyle = .none
-        window.contentView = webView
+        let container = NSView()
+        for view in [webView, progressLine] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        window.contentView = container
+        let contentTop = (window.contentLayoutGuide as! NSLayoutGuide).topAnchor
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            // Centered on the toolbar's bottom edge.
+            progressLine.centerYAnchor.constraint(equalTo: contentTop),
+            progressLine.heightAnchor.constraint(equalToConstant: 2),
+            progressLine.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            progressLine.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("ReaderWindow")
         if !window.setFrameUsingName("ReaderWindow") { window.center() }
@@ -60,8 +78,9 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
             playing: state["playing"] as? Bool ?? false,
             canPlay: state["canPlay"] as? Bool ?? false,
             speed: (state["speed"] as? NSNumber)?.doubleValue ?? settings.defaultSpeed,
-            status: state["status"] as? String ?? ""
+            message: state["message"] as? String ?? ""
         )
+        progressLine.setProgress((state["progress"] as? NSNumber)?.doubleValue ?? 0)
     }
 
     func show() {
@@ -91,7 +110,8 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
     func showMessage(_ message: String) {
         pageLoaded = false
         loadingReader = false
-        toolbar.update(playing: false, canPlay: false, speed: settings.defaultSpeed, status: "")
+        toolbar.update(playing: false, canPlay: false, speed: settings.defaultSpeed, message: "")
+        progressLine.setProgress(0)
         let escaped = message
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")

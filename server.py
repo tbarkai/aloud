@@ -493,13 +493,25 @@ body.dragging::after {
   }
 
   // In the macOS app, the native toolbar mirrors the page's playback state.
+  // The app shows progress as a bar, so it only gets status text that isn't
+  // progress (errors and notices).
   function syncApp() {
     window.webkit?.messageHandlers?.reader?.postMessage({
       playing: isPlaying,
       canPlay: !document.getElementById('playBtn').disabled,
       speed: speed(),
-      status: document.getElementById('status').textContent,
+      progress,
+      message: statusIsProgress ? '' : document.getElementById('status').textContent,
     });
+  }
+
+  // Fraction of the text read so far, 0 to 1, advancing within each sentence.
+  let progress = 0;
+  let statusIsProgress = true;
+
+  function setProgress(value) {
+    progress = value;
+    syncApp();
   }
 
   function onVoiceChange() { savePrefs(); invalidateCache(); }
@@ -663,7 +675,8 @@ body.dragging::after {
     invalidateCache();
     renderSentences();
     document.getElementById('playBtn').disabled = false;
-    setStatus(`${sentences.length} sentence${sentences.length !== 1 ? 's' : ''}`);
+    setStatus(`${sentences.length} sentence${sentences.length !== 1 ? 's' : ''}`, true);
+    setProgress(0);
   }
 
   function renderSentences() {
@@ -770,7 +783,13 @@ body.dragging::after {
     currentAudio = audio;
     delete audioReady[cacheKey(index)];
     highlight(index);
-    setStatus(`${index + 1} / ${sentences.length}`);
+    setStatus(`${index + 1} / ${sentences.length}`, true);
+    setProgress(index / sentences.length);
+    audio.ontimeupdate = () => {
+      if (gen === playGen && audio.duration) {
+        setProgress((index + audio.currentTime / audio.duration) / sentences.length);
+      }
+    };
     const next = () => {
       URL.revokeObjectURL(audio.src);
       if (currentAudio === audio) currentAudio = null;
@@ -794,7 +813,8 @@ body.dragging::after {
       discardPaused();
       clearHighlights();
       currentIndex = 0;
-      setStatus('Done');
+      setStatus('Done', true);
+      setProgress(1);
       return;
     }
     currentIndex = index;
@@ -849,7 +869,8 @@ body.dragging::after {
     currentIndex = 0;
     document.getElementById('readerContent').replaceChildren(placeholder);
     document.getElementById('playBtn').disabled = true;
-    setStatus('');
+    setStatus('', true);
+    setProgress(0);
   }
 
   function togglePlay() {
@@ -864,6 +885,7 @@ body.dragging::after {
     discardPaused();
     currentIndex = index;
     highlight(index);
+    setProgress(index / sentences.length);
     if (wasPlaying) playFrom(index);
   }
 
@@ -873,7 +895,8 @@ body.dragging::after {
     syncApp();
   }
 
-  function setStatus(msg) {
+  function setStatus(msg, isProgress = false) {
+    statusIsProgress = isProgress;
     document.getElementById('status').textContent = msg;
     syncApp();
   }
