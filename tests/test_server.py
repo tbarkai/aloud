@@ -1,4 +1,10 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import sys
 import unittest
+import urllib.request
+from pathlib import Path
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -129,6 +135,56 @@ class AccessTests(unittest.TestCase):
         res = TestClient(app, base_url="http://attacker.example", cookies={"aloud_token": "secret"}).get("/")
 
         self.assertEqual(res.status_code, 400)
+
+
+class AppModeTests(unittest.TestCase):
+    """The handshake the Mac app relies on when it runs `server.py --app`."""
+
+    def start(self, token):
+        root = Path(__file__).resolve().parent.parent
+        proc = subprocess.Popen(
+            [sys.executable, "server.py", "--app"], cwd=root,
+            env={**os.environ, "ALOUD_TOKEN": token},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        self.addCleanup(proc.stdout.close)
+        self.addCleanup(proc.stdin.close)
+        return proc
+
+    def read_until_stdout_closes(self, proc):
+        # A bounded wait, so a server that never closes stdout fails the test instead of hanging it.
+        pool = ThreadPoolExecutor(1)
+        try:
+            return pool.submit(proc.stdout.read).result(timeout=60)
+        finally:
+            pool.shutdown(wait=False)  # the cleanup's kill ends a stuck read
+
+    def test_reports_only_its_port_then_serves_on_it(self):
+        proc = self.start("secret")
+
+        printed = self.read_until_stdout_closes(proc)
+
+        port = int(printed.decode())
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/voices", headers={"Cookie": "aloud_token=secret"}
+        )
+        self.assertEqual(urllib.request.urlopen(req, timeout=10).status, 200)
+
+    def test_exits_when_stdin_closes(self):
+        # The app holds stdin open, so this is what happens when the app dies.
+        proc = self.start("secret")
+        self.read_until_stdout_closes(proc)
+
+        proc.stdin.close()
+
+        self.assertEqual(proc.wait(timeout=10), 0)
+
+    def test_refuses_to_start_without_a_token(self):
+        proc = self.start("")
+
+        self.assertNotEqual(proc.wait(timeout=60), 0)
 
 
 if __name__ == "__main__":

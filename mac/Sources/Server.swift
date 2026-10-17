@@ -2,13 +2,14 @@ import Foundation
 
 /// Where the app's own server listens, and the token it requires.
 struct ServerEndpoint: Equatable {
+    static let cookieName = "aloud_token"
     let url: URL
     let token: String
 
     /// Carries the token for the web view; set it in the page's cookie store.
     var cookie: HTTPCookie {
         HTTPCookie(properties: [
-            .originURL: url, .path: "/", .name: "aloud_token", .value: token,
+            .originURL: url, .path: "/", .name: Self.cookieName, .value: token,
             .sameSitePolicy: HTTPCookieStringPolicy.sameSiteStrict,
         ])!
     }
@@ -16,7 +17,7 @@ struct ServerEndpoint: Equatable {
     func request(_ path: String) -> URLRequest {
         var request = URLRequest(url: url.appendingPathComponent(path))
         request.httpShouldHandleCookies = false
-        request.setValue("aloud_token=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("\(Self.cookieName)=\(token)", forHTTPHeaderField: "Cookie")
         return request
     }
 }
@@ -43,11 +44,18 @@ final class Server {
 
     /// Starts the server unless it's already running, and returns where it listens.
     func ensureRunning() async throws -> ServerEndpoint {
-        if let launch, process?.isRunning == true { return try await launch.value }
-        stop()
-        let launch = try start()
-        self.launch = launch
-        return try await launch.value
+        if launch == nil || process?.isRunning != true {
+            stop()
+            launch = try start()
+        }
+        let launch = launch!
+        do {
+            return try await launch.value
+        } catch {
+            // Let the next call start afresh instead of repeating this failure.
+            if self.launch == launch { stop() }
+            throw error
+        }
     }
 
     func stop() {
@@ -88,16 +96,16 @@ final class Server {
                 p.terminate()
             }
             defer { timeout.cancel() }
-            // The server prints its port and then closes stdout; anything an
-            // import printed first comes before it.
+            // The server prints its port once it's serving, then closes stdout;
+            // anything an import printed comes before it. The read blocks, so
+            // it runs on a dispatch thread rather than one of Swift's few task threads.
             let reader = output.fileHandleForReading
-            let printed = await Task.detached { reader.readDataToEndOfFile() }.value
+            let printed = await withCheckedContinuation { continuation in
+                DispatchQueue.global().async { continuation.resume(returning: reader.readDataToEndOfFile()) }
+            }
             guard let line = String(decoding: printed, as: UTF8.self).split(whereSeparator: \.isNewline).last,
                   let port = Int(line)
-            else {
-                p.terminate()
-                throw ServerError.didNotStart(logURL)
-            }
+            else { throw ServerError.didNotStart(logURL) }
             return ServerEndpoint(url: URL(string: "http://127.0.0.1:\(port)/")!, token: token)
         }
     }

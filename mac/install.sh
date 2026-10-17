@@ -33,8 +33,10 @@ plutil -replace ReaderProjectDir -string "$ROOT" "$BUILD/Contents/Info.plist"
 codesign --force --sign - "$BUILD"
 
 echo "Installing to ${DEST}…"
-# Quit normally so the app stops its server. (A server whose app crashed exits on its own.)
+# Quit normally so the app stops its server. (A server whose app crashed exits
+# on its own; builds before that left them running on port 7861.)
 osascript -e 'quit app id "dev.local.Aloud"' 2>/dev/null || true
+pkill -f "server.py --port 7861" 2>/dev/null || true
 mkdir -p "$HOME/Applications"
 rm -rf "$DEST"
 cp -R "$BUILD" "$DEST"

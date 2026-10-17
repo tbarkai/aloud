@@ -1121,18 +1121,28 @@ def exit_when_stdin_closes():
     os._exit(0)
 
 
+class AppServer(uvicorn.Server):
+    """Tells the Mac app its port once it accepts connections."""
+
+    async def startup(self, sockets=None):
+        await super().startup(sockets=sockets)
+        if self.should_exit:
+            return
+        # Report the port, then point stdout at the log (stderr). That closes
+        # the app's pipe, which tells it the line is complete.
+        print(sockets[0].getsockname()[1], flush=True)
+        os.dup2(2, 1)
+
+
 def run_for_app():
-    app.state.token = os.environ["ALOUD_TOKEN"]
+    token = os.environ.get("ALOUD_TOKEN")
+    if not token:
+        sys.exit("--app needs a token in ALOUD_TOKEN")
+    app.state.token = token
     threading.Thread(target=exit_when_stdin_closes, daemon=True).start()
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
-    # Listening now lets requests queue until uvicorn starts serving.
-    sock.listen()
-    # Report the port, then point stdout at the log (stderr). That closes the
-    # app's pipe, which tells it the line is complete.
-    print(sock.getsockname()[1], flush=True)
-    os.dup2(2, 1)
-    uvicorn.Server(uvicorn.Config(app)).run(sockets=[sock])
+    AppServer(uvicorn.Config(app)).run(sockets=[sock])
 
 
 if __name__ == "__main__":

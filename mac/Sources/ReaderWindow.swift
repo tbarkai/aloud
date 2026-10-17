@@ -88,17 +88,22 @@ final class ReaderWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, WKSc
         window.bringToFront()
     }
 
-    /// Queues `text` to be read once the page is up; call `serverReady()` after.
+    /// Queues `text` to be read; call `serverReady(at:)` after to deliver it.
     /// Markdown is cleaned up by the server before reading.
     func read(_ text: String, markdown: Bool = false) {
         pending = (text, markdown)
         show()
-        if pageLoaded { deliverPending() }
     }
 
+    /// Loads the page from `server` if it isn't already, then reads any queued text.
     func serverReady(at server: ServerEndpoint) {
-        // A restarted server listens somewhere else, so a page from the old one is dead.
-        guard server != self.server || (!pageLoaded && !loadingReader) else { return }
+        if server == self.server, pageLoaded {
+            deliverPending()
+            return
+        }
+        // A restarted server listens somewhere else, so a page from the old one
+        // is dead. Queued text waits for the new page.
+        guard server != self.server || !loadingReader else { return }
         self.server = server
         pageLoaded = false
         loadingReader = true
