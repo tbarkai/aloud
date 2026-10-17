@@ -230,10 +230,14 @@ final class SettingsWindow {
     let window: NSWindow
 
     init(settings: Settings) {
-        window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(settings: settings)))
+        let hosting = NSHostingController(rootView: SettingsView(settings: settings))
+        window = NSWindow(contentViewController: hosting)
         window.title = "Aloud Settings"
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
+        // SwiftUI sizes the window lazily; centering first would center a 1pt
+        // window that then grows up and to the right.
+        window.setContentSize(hosting.view.fittingSize)
         window.center()
     }
 
