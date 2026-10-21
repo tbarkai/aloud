@@ -39,7 +39,7 @@ The app runs `server.py` from this checkout on a free local port. It doesn't car
 ### Using it
 
 - Select text, right-click, and choose Read in Aloud. In apps with several services it sits under Services. Most native apps and Safari support this. Many Electron apps, such as Slack and VS Code, don't.
-- Click the menu bar icon, or press ⌃⌘S from any app, to open the reader. Right-click the icon for its menu.
+- Press ⌃⌘S from any app, or choose Show Reader from the menu bar icon, to open the reader.
 - In the reader, ⌘V reads whatever is on the clipboard. You can also drop a `.md` or `.txt` file on the window or the Dock icon. Aloud strips Markdown to plain text first.
 - Click a sentence to jump to it. Space plays and pauses. ⌘K clears the reader.
 - The speed slider in the toolbar applies to the current text only. New text starts at the default speed.

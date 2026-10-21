@@ -7,7 +7,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var reader = ReaderWindow(settings: settings)
     private lazy var settingsWindow = SettingsWindow(settings: settings)
     private var statusItem: NSStatusItem!
-    private var statusMenu: NSMenu!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The "Read in Aloud" entry in the right-click menu is declared under NSServices in Info.plist.
@@ -173,24 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Aloud", action: #selector(NSApplication.terminate), keyEquivalent: "")
         for item in menu.items where item.action != #selector(NSApplication.terminate) { item.target = self }
-        statusMenu = menu
-
-        // Left click opens the reader; right click (or ⌃-click) opens the menu.
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(statusItemClicked)
-        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-    }
-
-    @objc private func statusItemClicked() {
-        let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            // Attaching the menu only for this click keeps left clicks going to the action.
-            statusItem.menu = statusMenu
-            statusItem.button?.performClick(nil)
-            statusItem.menu = nil
-        } else {
-            showReader()
-        }
+        statusItem.menu = menu
     }
 }
 
