@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         becomeRegularApp()
         // It may have been changed in System Settings since.
         settings.refreshStartAtLogin()
+        settings.refreshServiceShortcut()
         settingsWindow.show()
         Task {
             if let endpoint = try? await server.ensureRunning() { await settings.loadVoices(from: endpoint) }

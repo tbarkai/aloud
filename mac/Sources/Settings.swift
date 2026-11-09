@@ -37,6 +37,10 @@ final class Settings: ObservableObject {
     }
     /// Set when another app already holds the shortcut.
     @Published private(set) var shortcutConflict = false
+    /// Set when the shortcut is the Read in Aloud service's; it is then left unregistered.
+    @Published private(set) var shortcutClashesWithService = false
+    /// Read in Aloud's shortcut, owned by System Settings; see refreshServiceShortcut().
+    private var serviceShortcut = ReadSelectionService.shortcut()
 
     let showReaderHotKey = GlobalHotKey()
     var onVoiceChange: ((String) -> Void)?
@@ -52,10 +56,35 @@ final class Settings: ObservableObject {
         } else {
             showReaderShortcut = .showReaderDefault
         }
+
+        // The service's shortcut is changed in System Settings, and leaving it
+        // activates another app, so this catches the change in either direction.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshServiceShortcut() }
+        }
     }
 
     func applyShortcut() {
-        shortcutConflict = !showReaderHotKey.register(showReaderShortcut)
+        // While recording, the hotkey stays off so pressing it reaches the recorder.
+        guard !recordingShortcut else { return }
+        // Registering it would stop the service from reading the selection, so the
+        // service keeps the key until the user picks another one here.
+        shortcutClashesWithService = clashesWithService(showReaderShortcut)
+        shortcutConflict = !showReaderHotKey.register(shortcutClashesWithService ? nil : showReaderShortcut)
+    }
+
+    func refreshServiceShortcut() {
+        let current = ReadSelectionService.shortcut()
+        guard current != serviceShortcut else { return }
+        serviceShortcut = current
+        applyShortcut()
+    }
+
+    private func clashesWithService(_ shortcut: Shortcut?) -> Bool {
+        guard let shortcut, let serviceShortcut else { return false }
+        return shortcut.sameKeys(as: serviceShortcut)
     }
 
     @Published private(set) var recordingShortcut = false
@@ -72,8 +101,13 @@ final class Settings: ObservableObject {
                 if event.keyCode == UInt16(kVK_Escape) {
                     self.stopRecording()
                 } else if let shortcut = Shortcut(event: event) {
-                    self.stopRecording()
-                    self.showReaderShortcut = shortcut
+                    if self.clashesWithService(shortcut) {
+                        NSSound.beep()
+                        self.shortcutClashesWithService = true
+                    } else {
+                        self.stopRecording()
+                        self.showReaderShortcut = shortcut
+                    }
                 } else {
                     NSSound.beep()
                 }
@@ -137,7 +171,11 @@ struct SettingsView: View {
                     ShortcutRecorder(settings: settings)
                 }
             } footer: {
-                if settings.shortcutConflict {
+                if settings.shortcutClashesWithService {
+                    Text("This shortcut runs Read in Aloud on selected text. Choose a different one.")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                } else if settings.shortcutConflict {
                     Text("Another app is using this shortcut. Choose a different one.")
                         .font(.footnote)
                         .foregroundStyle(.red)

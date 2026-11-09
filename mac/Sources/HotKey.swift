@@ -51,6 +51,58 @@ struct Shortcut: Codable, Equatable {
         return m
     }
 
+    /// A shortcut from a services key equivalent such as "@~s": modifier symbols, then the
+    /// key, uppercase when ⇧ is part of it. Nil when the key isn't on the keyboard layout.
+    init?(keyEquivalent: String) {
+        guard let char = keyEquivalent.last else { return nil }
+        var flags: NSEvent.ModifierFlags = []
+        for symbol in keyEquivalent.dropLast() {
+            switch symbol {
+            case "@": flags.insert(.command)
+            case "~": flags.insert(.option)
+            case "^": flags.insert(.control)
+            case "$": flags.insert(.shift)
+            default: return nil
+            }
+        }
+        if char.isUppercase { flags.insert(.shift) }
+        guard let code = Shortcut.keyCode(producing: Character(char.lowercased())) else { return nil }
+        self.init(keyCode: code, modifiers: flags.rawValue, key: char.uppercased())
+    }
+
+    /// Whether both press the same keys. `key` is left out: it is the character the
+    /// layout produced when recorded, so the same key reads "S" in one layout and "ד" in another.
+    func sameKeys(as other: Shortcut) -> Bool {
+        keyCode == other.keyCode && modifiers == other.modifiers
+    }
+
+    /// The key that types `char` on the ASCII-capable layout, which AppKit matches
+    /// ⌘ key equivalents against when the current layout isn't Latin.
+    private static func keyCode(producing char: Character) -> UInt32? {
+        guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let layoutData = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        else { return nil }
+        let data = Unmanaged<CFData>.fromOpaque(layoutData).takeUnretainedValue() as Data
+        let target = String(char)
+        return data.withUnsafeBytes { raw -> UInt32? in
+            guard let layout = raw.bindMemory(to: UCKeyboardLayout.self).baseAddress else { return nil }
+            // Main keys come before the keypad, so digits resolve to the top row.
+            for code in UInt16(0)..<128 {
+                var deadKeys: UInt32 = 0
+                var length = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                let status = UCKeyTranslate(
+                    layout, code, UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
+                    OptionBits(kUCKeyTranslateNoDeadKeysBit), &deadKeys, chars.count, &length, &chars
+                )
+                if status == noErr, String(utf16CodeUnits: chars, count: length) == target {
+                    return UInt32(code)
+                }
+            }
+            return nil
+        }
+    }
+
     // Keys whose characters don't print usefully.
     private static let keyNames: [Int: String] = [
         kVK_Space: "Space", kVK_Return: "↩", kVK_Tab: "⇥", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
@@ -96,5 +148,31 @@ final class GlobalHotKey {
             shortcut.keyCode, shortcut.carbonModifiers, id, GetApplicationEventTarget(),
             OptionBits(kEventHotKeyExclusive), &ref
         ) == noErr
+    }
+}
+
+/// The Read in Aloud service declared under NSServices in Info.plist. macOS runs its
+/// shortcut only when no app claims the key first, so a Show Reader hotkey on the same
+/// key would swallow it and open the reader empty.
+enum ReadSelectionService {
+    /// Its shortcut as System Settings has it, or nil when it has none or is turned off.
+    static func shortcut() -> Shortcut? {
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              let service = (Bundle.main.infoDictionary?["NSServices"] as? [[String: Any]])?.first,
+              let title = (service["NSMenuItem"] as? [String: String])?["default"],
+              let message = service["NSMessage"] as? String
+        else { return nil }
+        let domain = "pbs" as CFString
+        CFPreferencesAppSynchronize(domain)
+        let status = CFPreferencesCopyAppValue("NSServicesStatus" as CFString, domain) as? [String: Any]
+        let entry = status?["\(bundleID) - \(title) - \(message)"] as? [String: Any]
+        // Unchecking the service in Keyboard Shortcuts keeps its key but stops it running.
+        if (entry?["enabled_services_menu"] as? Bool) == false { return nil }
+        // The user's key wins (empty when they removed it); without one, the Info.plist
+        // default applies, a single character with ⌘ implied.
+        let equivalent = entry?["key_equivalent"] as? String
+            ?? ((service["NSKeyEquivalent"] as? [String: String])?["default"]).map { "@" + $0 }
+        guard let equivalent, !equivalent.isEmpty else { return nil }
+        return Shortcut(keyEquivalent: equivalent)
     }
 }
